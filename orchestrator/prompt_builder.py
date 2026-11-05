@@ -1,0 +1,79 @@
+"""Builds the single instruction string handed to whichever headless coding
+agent runs it (Gemini CLI first, Claude Code as fallback — see runners.py).
+
+Claude Code auto-loads CLAUDE.md from the repo root on its own; Gemini CLI
+has the equivalent convention for a file named GEMINI.md, which here is
+just a pointer back to CLAUDE.md (see ../GEMINI.md). Rather than depend on
+either CLI's auto-load behavior, every instruction explicitly tells the
+agent to read CLAUDE.md itself first — that way the pipeline's actual
+behavior doesn't depend on which backend happened to run it. These
+instructions still only point at the specific ticket/comment and the
+specific cheat sheets to read, not the whole knowledge base (see
+security/knowledge/README.md's token-discipline rule).
+"""
+from __future__ import annotations
+
+from .knowledge import cheatsheet_paths, classify
+from .models import Decision, ReviewComment, VulnTicket
+
+
+def build_fix_instruction(ticket: VulnTicket) -> str:
+    categories = classify(ticket.text)
+    sheets = cheatsheet_paths(categories)
+
+    cat_line = ", ".join(f"{c.code} ({c.name})" for c in categories) or (
+        "unclassified — read security/knowledge/owasp-top10-2021.md and "
+        "classify it yourself before patching"
+    )
+    sheets_block = "\n".join(f"- {s}" for s in sheets) or (
+        "(no specific cheat sheet auto-matched — classify first, then open "
+        "the matching file under security/knowledge/cheatsheets/)"
+    )
+
+    return (
+        "Before anything else, read CLAUDE.md in the repo root in full — it "
+        "has the complete process you must follow for this task.\n\n"
+        f"Jira ticket {ticket.key}: {ticket.summary}\n\n"
+        f"Description:\n{ticket.description}\n\n"
+        f"Likely OWASP category: {cat_line}\n"
+        f"Relevant cheat sheet(s) to read before patching:\n{sheets_block}\n\n"
+        "Follow the Phase 2(a) decision tree in CLAUDE.md: analyze the root "
+        "cause, write a surgical patch (small blast radius — do not touch "
+        "unrelated code), update/add a test if a suite already covers this "
+        f"module, then output a <fix_summary>. Create branch fix/ai-{ticket.key}, "
+        f"commit, and open a PR that includes '{ticket.key}' in its title "
+        "and description."
+    )
+
+
+def build_review_instruction(comment: ReviewComment, decision: Decision) -> str:
+    location = comment.file_path or "the MR"
+    if comment.line:
+        location += f":{comment.line}"
+
+    if decision.path == "defend":
+        patterns = ", ".join(decision.candidate_fp_patterns) or "none named"
+        guidance = (
+            f"This comment matches possible false-positive pattern(s) ({patterns}) "
+            "from security/knowledge/false-positive-patterns.md. Only reply with "
+            "'FALSE POSITIVE DEFENSE:' if you can cite concrete evidence in THIS "
+            "repository (an actual file/line/control). If you cannot find that "
+            "evidence, fix the issue instead (Path A) rather than asserting a "
+            "false positive without proof."
+        )
+    else:
+        guidance = (
+            "No false-positive pattern was detected automatically for this "
+            "comment — default to fixing it (Path A) unless you find clear, "
+            "citable evidence in this repo that it's a false positive."
+        )
+
+    return (
+        "Before anything else, read CLAUDE.md in the repo root in full — it "
+        "has the complete process you must follow for this task.\n\n"
+        f"CodeRabbit review comment on {location}:\n\n\"{comment.body}\"\n\n"
+        f"{guidance}\n\n"
+        "Follow the Phase 2(b) decision tree in CLAUDE.md: Path A, fix and "
+        "reply starting 'FIXED:'; Path B, defend and reply starting "
+        "'FALSE POSITIVE DEFENSE:', citing evidence."
+    )

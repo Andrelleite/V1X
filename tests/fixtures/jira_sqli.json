@@ -1,0 +1,7 @@
+{
+  "issue_key": "SEC-101",
+  "summary": "SQL Injection in /auth login endpoint",
+  "description": "The login handler builds the SQL query by concatenating the username field directly into the query string, e.g. \"SELECT * FROM users WHERE username = '\" + username + \"'\". An attacker can inject arbitrary SQL via the username field to bypass authentication.",
+  "labels": ["sec-ai-fix"],
+  "repo": "your-org/your-app"
+}

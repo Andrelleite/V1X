@@ -1,0 +1,64 @@
+name: AI AppSec Review Loop
+
+# Fired whenever CodeRabbit (or anyone) comments on a PR this pipeline
+# opened. Only acts on comments from the coderabbitai bot and only on
+# branches named fix/ai-*, so human review comments are never auto-actioned.
+on:
+  issue_comment:
+    types: [created]
+  pull_request_review_comment:
+    types: [created]
+
+jobs:
+  respond:
+    if: >
+      github.event.comment.user.login == 'coderabbitai[bot]' &&
+      startsWith(github.event.pull_request.head.ref || '', 'fix/ai-')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build review payload file
+        # CodeRabbit's comment body is untrusted input (same class of risk as
+        # any attacker-reachable string): pass it via env, never interpolate
+        # ${{ }} directly into the script — see the note in ai-fix.yml.
+        env:
+          COMMENT_BODY: ${{ github.event.comment.body }}
+          COMMENT_PATH: ${{ github.event.comment.path }}
+        run: |
+          python3 - <<'PY'
+          import json, os
+          payload = {
+              "body": os.environ["COMMENT_BODY"],
+              "file_path": os.environ.get("COMMENT_PATH") or None,
+              "line": None,
+              "author": "coderabbitai",
+          }
+          with open("review_payload.json", "w") as f:
+              json.dump(payload, f)
+          PY
+
+      - name: Install Gemini CLI and Claude Code
+        run: |
+          npm install -g @google/gemini-cli
+          npm install -g @anthropic-ai/claude-code
+
+      - name: Run the reviewer-response step
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          python3 -m orchestrator.cli review --payload review_payload.json --execute
+
+      - name: Push any new commit
+        run: |
+          git push origin HEAD || echo "nothing to push (likely a defense reply, no code change)"

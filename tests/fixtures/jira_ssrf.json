@@ -1,0 +1,7 @@
+{
+  "issue_key": "SEC-102",
+  "summary": "SSRF via webhook URL field",
+  "description": "The /integrations/webhook endpoint lets a user supply a callback URL that the server fetches on event delivery. An attacker can point this at internal services, including the cloud metadata endpoint 169.254.169.254.",
+  "labels": ["sec-ai-fix"],
+  "repo": "your-org/your-app"
+}

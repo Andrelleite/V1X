@@ -1,0 +1,81 @@
+name: AI AppSec Fix
+
+# Fired by the Jira Automation rule (docs/jira-automation-rule.md) via
+# repository_dispatch, or manually for testing with workflow_dispatch.
+on:
+  repository_dispatch:
+    types: [trigger_ai_fix]
+  workflow_dispatch:
+    inputs:
+      issue_key:
+        description: "Jira issue key, e.g. SEC-101"
+        required: true
+      summary:
+        required: true
+      description:
+        required: true
+
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build Jira payload file
+        # Jira-sourced fields are untrusted input: pass them through env vars,
+        # never interpolate ${{ }} directly into the script body — that's a
+        # script-injection vector (a crafted summary/description could break
+        # out of the string and run arbitrary shell/python).
+        env:
+          ISSUE_KEY: ${{ github.event.client_payload.issue_key || inputs.issue_key }}
+          SUMMARY: ${{ github.event.client_payload.summary || inputs.summary }}
+          DESCRIPTION: ${{ github.event.client_payload.description || inputs.description }}
+        run: |
+          python3 - <<'PY'
+          import json, os
+          payload = {
+              "issue_key": os.environ["ISSUE_KEY"],
+              "summary": os.environ["SUMMARY"],
+              "description": os.environ["DESCRIPTION"],
+              "labels": ["sec-ai-fix"],
+              "repo": "${{ github.repository }}",  # not attacker-controlled
+          }
+          with open("jira_payload.json", "w") as f:
+              json.dump(payload, f)
+          PY
+
+      - name: Install Gemini CLI and Claude Code
+        # Gemini is tried first (cost reasons), Claude Code is the fallback
+        # — see orchestrator/runners.py. Installing both means the fallback
+        # actually works even if Gemini errors out mid-run.
+        run: |
+          npm install -g @google/gemini-cli
+          npm install -g @anthropic-ai/claude-code
+
+      - name: Create branch
+        run: |
+          git checkout -b "fix/ai-$(python3 -c "import json;print(json.load(open('jira_payload.json'))['issue_key'])")"
+
+      - name: Run the Fixer (dry run by default — remove --execute flag check once validated)
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          python3 -m orchestrator.cli fix --payload jira_payload.json --execute
+
+      - name: Push branch and open PR
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git push origin HEAD
+          gh pr create \
+            --title "[$(python3 -c "import json;print(json.load(open('jira_payload.json'))['issue_key'])")] AI Automated Fix" \
+            --body "Automated remediation for Jira ticket. See CLAUDE.md for the process that produced this PR." \
+            --fill

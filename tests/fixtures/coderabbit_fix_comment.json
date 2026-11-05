@@ -1,0 +1,6 @@
+{
+  "body": "The sanitization added here doesn't account for nested JSON payloads — a crafted nested object can still smuggle a script tag through. Please update the encoding to recurse into nested structures.",
+  "file_path": "src/auth/sanitize.py",
+  "line": 42,
+  "author": "coderabbitai"
+}

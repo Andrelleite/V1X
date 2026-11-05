@@ -1,0 +1,7 @@
+{
+  "body": "This internal ID looks like an Insecure Direct Object Reference — any authenticated user could pass an arbitrary id and read another tenant's record.",
+  "file_path": "src/billing/invoices.py",
+  "line": 88,
+  "author": "coderabbitai",
+  "evidence": "invoices.py:80-86 scopes the query with WHERE tenant_id = :current_tenant before this line runs, and that value is already validated upstream in middleware/tenant_scope.py:14"
+}
