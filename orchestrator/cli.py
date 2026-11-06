@@ -278,7 +278,15 @@ def _handle_review_thread(
     runner, result, attempts = run_review(t.comment, decision, repo_dir=repo_dir)
     _print_attempts(label, attempts)
 
-    response = parse_review_response(result.stdout)
+    # result.stdout is the raw --output-format json blob (its real
+    # newlines are JSON-escaped, all on one line) -- must decode it to
+    # get the agent's actual response text before line-parsing it for
+    # the ===REVIEW_RESPONSE=== block, same as cmd_fix does via
+    # cost_module.extract() before parse_fix_report().
+    run_cost = cost_module.extract(
+        runner.name, result.stdout, using_subscription=claude_uses_subscription()
+    )
+    response = parse_review_response(run_cost.text)
     if not response.found:
         print(f"[{label}] no parseable ===REVIEW_RESPONSE=== block for "
               f"MR !{t.mr_iid} — leaving thread unresolved")

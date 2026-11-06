@@ -1,3 +1,4 @@
+import json
 import os
 from pathlib import Path
 from unittest.mock import patch
@@ -88,15 +89,24 @@ def test_review_loop_execute_fixes_pushes_and_resolves(capsys, monkeypatch):
         mr_iid=9, discussion_id="disc-1",
         comment=ReviewComment(body="please validate this input"),
     )
-    fake_result = type("R", (), {"stdout": (
-        "===REVIEW_RESPONSE===\nPATH: FIXED\nMESSAGE: Added validation.\n"
-        "===END_REVIEW_RESPONSE==="
-    ), "stderr": "", "returncode": 0})()
+    # Shaped like real `claude --output-format json` stdout: a single-line
+    # JSON blob whose "result" field holds the actual multi-line response
+    # text with its newlines JSON-escaped -- not pre-formatted plain text.
+    # This is what actually broke review-loop/review-watch on real MRs
+    # (every real run logged "no parseable ===REVIEW_RESPONSE=== block").
+    fake_result = type("R", (), {"stdout": json.dumps({
+        "result": (
+            "===REVIEW_RESPONSE===\nPATH: FIXED\nMESSAGE: Added validation.\n"
+            "===END_REVIEW_RESPONSE==="
+        ),
+        "total_cost_usd": 0.5,
+    }), "stderr": "", "returncode": 0})()
     fake_runner = type("Runner", (), {"name": "claude"})()
 
     with patch("orchestrator.cli.gitlab_review_module.list_all_unresolved_threads", return_value=[thread]), \
          patch("orchestrator.cli._checkout_mr_branch", return_value="fix/ai-VD-9-1"), \
          patch("orchestrator.cli.run_review", return_value=(fake_runner, fake_result, [(fake_runner, fake_result)])), \
+         patch("orchestrator.cli.claude_uses_subscription", return_value=False), \
          patch("orchestrator.cli._push_current_branch", return_value=True) as push_mock, \
          patch("orchestrator.cli.gitlab_review_module.trigger_review", return_value=True) as trigger_mock, \
          patch("orchestrator.cli.gitlab_review_module.reply_and_resolve", return_value=True) as reply_mock:
@@ -115,16 +125,20 @@ def test_review_loop_execute_defense_skips_push(capsys, monkeypatch):
         mr_iid=9, discussion_id="disc-1",
         comment=ReviewComment(body="hardcoded, not reachable by users"),
     )
-    fake_result = type("R", (), {"stdout": (
-        "===REVIEW_RESPONSE===\nPATH: FALSE_POSITIVE_DEFENSE\n"
-        "MESSAGE: config.ts:5 shows this is a build-time constant.\n"
-        "===END_REVIEW_RESPONSE==="
-    ), "stderr": "", "returncode": 0})()
+    fake_result = type("R", (), {"stdout": json.dumps({
+        "result": (
+            "===REVIEW_RESPONSE===\nPATH: FALSE_POSITIVE_DEFENSE\n"
+            "MESSAGE: config.ts:5 shows this is a build-time constant.\n"
+            "===END_REVIEW_RESPONSE==="
+        ),
+        "total_cost_usd": 0.1,
+    }), "stderr": "", "returncode": 0})()
     fake_runner = type("Runner", (), {"name": "claude"})()
 
     with patch("orchestrator.cli.gitlab_review_module.list_all_unresolved_threads", return_value=[thread]), \
          patch("orchestrator.cli._checkout_mr_branch", return_value="fix/ai-VD-9-1"), \
          patch("orchestrator.cli.run_review", return_value=(fake_runner, fake_result, [(fake_runner, fake_result)])), \
+         patch("orchestrator.cli.claude_uses_subscription", return_value=False), \
          patch("orchestrator.cli._push_current_branch") as push_mock, \
          patch("orchestrator.cli.gitlab_review_module.reply_and_resolve", return_value=True) as reply_mock:
         rc = main(["review-loop", "--repo", "group/repo", "--execute"])
