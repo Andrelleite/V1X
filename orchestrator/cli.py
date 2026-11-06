@@ -19,7 +19,7 @@ from pathlib import Path
 
 from .fixer import run_fix, run_review
 from .models import Decision, ReviewComment, VulnTicket
-from .prompt_builder import build_fix_instruction, build_review_instruction
+from .prompt_builder import build_fix_instruction, build_review_instruction, category_line
 from .report import parse_fix_report, render_mr_description
 from .review_loop import route
 from .runners import build_command, select_runner
@@ -67,7 +67,11 @@ def cmd_fix(args: argparse.Namespace) -> int:
 
     report = parse_fix_report(result.stdout)
     description = render_mr_description(
-        ticket.key, _issue_url(ticket.key), report, backend=runner.name
+        ticket,
+        category_line(ticket.text),
+        report,
+        backend=runner.name,
+        issue_url=_issue_url(ticket.key),
     )
     Path(args.mr_description_out).write_text(description)
     print(f"[fix] wrote MR description to {args.mr_description_out} "

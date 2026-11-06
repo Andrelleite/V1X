@@ -17,11 +17,22 @@ from .knowledge import cheatsheet_paths, classify
 from .models import Decision, ReviewComment, VulnTicket
 
 
+def category_line(ticket_text: str) -> str:
+    """The deterministic OWASP classification line, shared between the
+    agent instruction and report.py's MR-description header (so the
+    header doesn't depend on the agent restating the category correctly).
+    """
+    categories = classify(ticket_text)
+    return ", ".join(f"{c.code} ({c.name})" for c in categories) or (
+        "unclassified"
+    )
+
+
 def build_fix_instruction(ticket: VulnTicket) -> str:
     categories = classify(ticket.text)
     sheets = cheatsheet_paths(categories)
 
-    cat_line = ", ".join(f"{c.code} ({c.name})" for c in categories) or (
+    cat_line = category_line(ticket.text) if categories else (
         "unclassified — read security/knowledge/owasp-top10-2021.md and "
         "classify it yourself before patching"
     )
@@ -53,6 +64,8 @@ def build_fix_instruction(ticket: VulnTicket) -> str:
         "correct and complete>\n"
         "BLAST_RADIUS: <LOW, MEDIUM, or HIGH — risk this change breaks "
         "something else>\n"
+        "AFFECTED_FILES: <comma-separated list of every file you changed "
+        "or that directly calls the changed code>\n"
         "SUMMARY: <what the vulnerability was and exactly what you changed "
         "to fix it, with file/line references>\n"
         "BLAST_RADIUS_DETAILS: <what else calls the changed code, whether "
@@ -60,6 +73,13 @@ def build_fix_instruction(ticket: VulnTicket) -> str:
         "verify (e.g. couldn't run the test suite)>\n"
         "TESTS: <whether a test suite already covered this code, what you "
         "added or updated, and whether you actually ran it>\n"
+        "===ARCHITECTURE_DIAGRAM===\n"
+        "<a Mermaid flowchart (flowchart TD) showing the vulnerable "
+        "component, what calls it, and what it calls/touches (e.g. a "
+        "database table, another module) — base this on what you actually "
+        "read in the codebase, not a generic template. Raw Mermaid syntax "
+        "only, no ``` code fences, no extra prose on these lines.>\n"
+        "===END_ARCHITECTURE_DIAGRAM===\n"
         "===END_FIX_REPORT==="
     )
 

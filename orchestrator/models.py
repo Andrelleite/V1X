@@ -12,6 +12,7 @@ class VulnTicket:
     description: str
     labels: tuple[str, ...] = ()
     repo: str | None = None
+    priority: str = "Unknown"
 
     @property
     def text(self) -> str:
@@ -23,7 +24,10 @@ class VulnTicket:
 
         Expected shape (see docs/jira-automation-rule.md):
             {"issue_key": "SEC-1", "summary": "...", "description": "...",
-             "labels": ["sec-ai-fix"], "repo": "owner/name"}
+             "labels": ["sec-ai-fix"], "repo": "owner/name", "priority": "Highest"}
+        `priority` is fetched from Jira's own Priority field by the CI
+        workflow (not user-editable free text), so the MR report's
+        "Severity" line is deterministic, not something the agent guesses.
         """
         return cls(
             key=payload["issue_key"],
@@ -31,6 +35,7 @@ class VulnTicket:
             description=payload.get("description", ""),
             labels=tuple(payload.get("labels", ())),
             repo=payload.get("repo"),
+            priority=payload.get("priority") or "Unknown",
         )
 
 

@@ -72,18 +72,20 @@ jobs:
           JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
         run: |
           curl -sf -u "$JIRA_EMAIL:$JIRA_API_TOKEN" \
-            "https://vixai.atlassian.net/rest/api/2/issue/$ISSUE_KEY?fields=summary,description" \
+            "https://vixai.atlassian.net/rest/api/2/issue/$ISSUE_KEY?fields=summary,description,priority" \
             -o jira_issue.json
           python3 - <<'PY'
           import json, os
           issue = json.load(open("jira_issue.json"))
           fields = issue.get("fields", {})
+          priority = (fields.get("priority") or {}).get("name") or "Unknown"
           payload = {
               "issue_key": os.environ["ISSUE_KEY"],
               "summary": fields.get("summary") or "",
               "description": fields.get("description") or "",
               "labels": ["sec-ai-fix"],
               "repo": os.environ["TARGET_REPO"],
+              "priority": priority,
           }
           with open("jira_payload.json", "w") as f:
               json.dump(payload, f)
