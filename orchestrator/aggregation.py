@@ -76,16 +76,19 @@ def _get_json(url: str, headers: dict[str, str]):
 
 
 def list_open_fix_mrs(api_base: str, project_path: str, token: str) -> list[OpenFixMR]:
-    """Every currently-open MR this pipeline itself created. Paginated up
-    to a few hundred open MRs — meant as a quick pre-check, not an
-    exhaustive audit; a project with more open pipeline MRs than that has
-    bigger problems than this function solves."""
+    """Every currently-open MR this pipeline itself created, newest first.
+    Newest-first is explicit (order_by/sort) rather than relying on
+    GitLab's own default, so review_loop/review-watch always handle the
+    MR a just-finished ai_fix run opened before working back through
+    older ones. Paginated up to a few hundred open MRs — meant as a quick
+    pre-check, not an exhaustive audit; a project with more open pipeline
+    MRs than that has bigger problems than this function solves."""
     encoded = urllib.parse.quote(project_path, safe="")
     results: list[OpenFixMR] = []
     for page in range(1, 4):
         url = (
             f"{api_base}/projects/{encoded}/merge_requests"
-            f"?state=opened&per_page=100&page={page}"
+            f"?state=opened&order_by=created_at&sort=desc&per_page=100&page={page}"
         )
         data = _get_json(url, {"PRIVATE-TOKEN": token})
         if not isinstance(data, list) or not data:

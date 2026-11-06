@@ -89,8 +89,19 @@ def _call(url: str, headers: dict[str, str], data: dict | None, method: str) -> 
         with urllib.request.urlopen(req, timeout=_TIMEOUT_SECONDS) as resp:
             return resp.status
     except urllib.error.HTTPError as exc:
+        # Every reply_and_resolve()/trigger_review() failure used to come
+        # back as a bare False with no way to tell a 403 (permission gap)
+        # from a 404 (stale discussion id) from a 429 -- print the real
+        # status and body so a job log actually says which it was.
+        error_body = ""
+        try:
+            error_body = exc.read().decode("utf-8", errors="replace")[:500]
+        except Exception:
+            pass
+        print(f"[gitlab_review] {method} {url} -> HTTP {exc.code}: {error_body}")
         return exc.code
-    except (urllib.error.URLError, TimeoutError, OSError):
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        print(f"[gitlab_review] {method} {url} -> {exc!r}")
         return None
 
 
