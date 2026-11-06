@@ -146,9 +146,12 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.TARGET_REPO_TOKEN }}
         run: |
+          # ../mr_description.md was written by orchestrator.cli (report.py)
+          # in the previous step, from the agent's ===FIX_REPORT=== block —
+          # a rich description with a confidence meter and blast-radius
+          # badge, not bare boilerplate.
           ISSUE_KEY=$(python3 -c "import json;print(json.load(open('../jira_payload.json'))['issue_key'])")
           git push origin HEAD
           gh pr create \
             --title "[$ISSUE_KEY] AI Automated Fix" \
-            --body "Automated remediation for Jira ticket $ISSUE_KEY. See CLAUDE.md (from Andrelleite/V1X) for the process that produced this PR." \
-            --fill
+            --body-file ../mr_description.md

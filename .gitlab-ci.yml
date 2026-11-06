@@ -81,10 +81,14 @@ ai_fix:
     - cd target
     - git push "https://oauth2:${TARGET_REPO_TOKEN}@gitlab.com/${TARGET_REPO}.git" "HEAD:fix/ai-${ISSUE_KEY}"
     - |
+      # mr_description.md was written by orchestrator.cli (report.py) in
+      # the previous step, from the agent's ===FIX_REPORT=== block — a
+      # rich description with a confidence meter and blast-radius badge,
+      # not the bare boilerplate this used to be.
       curl -sf -X POST \
         -H "PRIVATE-TOKEN: ${TARGET_REPO_TOKEN}" \
         --data-urlencode "source_branch=fix/ai-${ISSUE_KEY}" \
         --data-urlencode "target_branch=${DEFAULT_BRANCH}" \
         --data-urlencode "title=[${ISSUE_KEY}] AI Automated Fix" \
-        --data-urlencode "description=Automated remediation for Jira ticket ${ISSUE_KEY}. See CLAUDE.md (from the V1X project) for the process that produced this MR." \
+        --data-urlencode "description@../mr_description.md" \
         "https://gitlab.com/api/v4/projects/${PROJECT_PATH_ENCODED}/merge_requests"

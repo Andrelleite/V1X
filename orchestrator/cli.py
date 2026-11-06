@@ -13,18 +13,26 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
 from .fixer import run_fix, run_review
 from .models import Decision, ReviewComment, VulnTicket
 from .prompt_builder import build_fix_instruction, build_review_instruction
+from .report import parse_fix_report, render_mr_description
 from .review_loop import route
 from .runners import build_command, select_runner
+
+JIRA_SITE_URL = os.environ.get("JIRA_SITE_URL", "https://vixai.atlassian.net")
 
 
 def _load_json(path: str) -> dict:
     return json.loads(Path(path).read_text())
+
+
+def _issue_url(issue_key: str) -> str:
+    return f"{JIRA_SITE_URL}/browse/{issue_key}"
 
 
 def _report_selection(instruction: str) -> None:
@@ -56,6 +64,16 @@ def cmd_fix(args: argparse.Namespace) -> int:
     print(f"[fix] ran with backend={runner.name}")
     print(result.stdout)
     print(result.stderr, file=sys.stderr)
+
+    report = parse_fix_report(result.stdout)
+    description = render_mr_description(
+        ticket.key, _issue_url(ticket.key), report, backend=runner.name
+    )
+    Path(args.mr_description_out).write_text(description)
+    print(f"[fix] wrote MR description to {args.mr_description_out} "
+          f"(report found: {report.found}, confidence: {report.confidence}, "
+          f"blast_radius: {report.blast_radius})")
+
     return result.returncode
 
 
@@ -92,6 +110,7 @@ def main(argv: list[str] | None = None) -> int:
     fix_p.add_argument("--payload", required=True, help="Path to a JSON payload file")
     fix_p.add_argument("--repo-dir", default=".")
     fix_p.add_argument("--execute", action="store_true")
+    fix_p.add_argument("--mr-description-out", default="mr_description.md")
     fix_p.set_defaults(func=cmd_fix)
 
     review_p = sub.add_parser("review", help="Handle a CodeRabbit review comment")

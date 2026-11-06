@@ -17,7 +17,8 @@ def test_build_fix_instruction_includes_ticket_key_and_cheatsheet():
 
     assert "SEC-101" in instruction
     assert "injection.md" in instruction
-    assert "fix/ai-SEC-101" in instruction
+    assert "===FIX_REPORT===" in instruction
+    assert "CONFIDENCE:" in instruction
 
 
 def test_build_fix_instruction_ssrf_points_to_ssrf_sheet():
