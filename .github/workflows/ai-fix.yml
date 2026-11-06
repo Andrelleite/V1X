@@ -35,6 +35,12 @@ on:
 jobs:
   fix:
     runs-on: ubuntu-latest
+    env:
+      # `secrets.X` can't be referenced directly inside a step's `if:` —
+      # GitHub Actions only allows the secrets context in env:/with:/run:,
+      # not if: (parse error: "Unrecognized named-value: 'secrets'"). Stash
+      # it in a job-level env var first, then check THAT in if: instead.
+      HAS_CLAUDE_SUBSCRIPTION: ${{ secrets.CLAUDE_CODE_OAUTH_CREDS != '' }}
     steps:
       - name: Checkout V1X (this repo — the "brain", read-only)
         uses: actions/checkout@v4
@@ -115,7 +121,7 @@ jobs:
         # fallback run on a Pro/Max subscription instead of billed API
         # credits. See docs/claude-subscription-fallback.md for how this
         # secret is produced and its risk tradeoffs before relying on it.
-        if: ${{ secrets.CLAUDE_CODE_OAUTH_CREDS != '' }}
+        if: ${{ env.HAS_CLAUDE_SUBSCRIPTION == 'true' }}
         env:
           CLAUDE_CODE_OAUTH_CREDS: ${{ secrets.CLAUDE_CODE_OAUTH_CREDS }}
         run: |

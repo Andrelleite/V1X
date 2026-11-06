@@ -18,6 +18,14 @@ jobs:
     permissions:
       contents: write
       pull-requests: write
+    env:
+      # secrets.X can't be used directly inside a step's if: — see the
+      # same note in ai-fix.yml. NOTE: this workflow is otherwise stale —
+      # written for the old single-repo design, not yet updated for the
+      # centralized V1X architecture. Deferred on purpose (CodeRabbit loop
+      # not built yet); this fix only stops it breaking the Actions log on
+      # every push.
+      HAS_CLAUDE_SUBSCRIPTION: ${{ secrets.CLAUDE_CODE_OAUTH_CREDS != '' }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -53,7 +61,7 @@ jobs:
           npm install -g @anthropic-ai/claude-code
 
       - name: Restore Claude Code subscription session (optional fallback auth)
-        if: ${{ secrets.CLAUDE_CODE_OAUTH_CREDS != '' }}
+        if: ${{ env.HAS_CLAUDE_SUBSCRIPTION == 'true' }}
         env:
           CLAUDE_CODE_OAUTH_CREDS: ${{ secrets.CLAUDE_CODE_OAUTH_CREDS }}
         run: |
