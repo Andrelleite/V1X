@@ -2,7 +2,11 @@ import json
 from pathlib import Path
 
 from orchestrator.models import Decision, ReviewComment, VulnTicket
-from orchestrator.prompt_builder import build_fix_instruction, build_review_instruction
+from orchestrator.prompt_builder import (
+    build_fix_instruction,
+    build_review_instruction,
+    primary_category_keyword,
+)
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -26,6 +30,33 @@ def test_build_fix_instruction_ssrf_points_to_ssrf_sheet():
     instruction = build_fix_instruction(ticket)
 
     assert "ssrf.md" in instruction
+
+
+def test_build_fix_instruction_without_context_says_not_gathered():
+    ticket = VulnTicket.from_jira_payload(_load("jira_sqli.json"))
+    instruction = build_fix_instruction(ticket)
+
+    assert "not gathered for this run" in instruction
+
+
+def test_build_fix_instruction_includes_provided_related_context():
+    ticket = VulnTicket.from_jira_payload(_load("jira_sqli.json"))
+    instruction = build_fix_instruction(
+        ticket, related_context="- [jira] VD-3: old related SQLi fix"
+    )
+
+    assert "VD-3: old related SQLi fix" in instruction
+
+
+def test_primary_category_keyword_uses_classification():
+    ticket = VulnTicket.from_jira_payload(_load("jira_sqli.json"))
+    assert primary_category_keyword(ticket.text) == "Injection"
+
+
+def test_primary_category_keyword_falls_back_to_summary_words():
+    assert primary_category_keyword("totally unrelated free text here") == (
+        "totally unrelated free text"
+    )
 
 
 def test_build_review_instruction_defend_path_demands_evidence():

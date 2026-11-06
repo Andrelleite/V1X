@@ -17,15 +17,22 @@ import os
 import sys
 from pathlib import Path
 
+from . import context as context_module
 from . import cost as cost_module
 from .fixer import run_fix, run_review
 from .models import Decision, ReviewComment, VulnTicket
-from .prompt_builder import build_fix_instruction, build_review_instruction, category_line
+from .prompt_builder import (
+    build_fix_instruction,
+    build_review_instruction,
+    category_line,
+    primary_category_keyword,
+)
 from .report import parse_fix_report, render_mr_description
 from .review_loop import route
 from .runners import build_command, claude_uses_subscription, select_runner
 
 JIRA_SITE_URL = os.environ.get("JIRA_SITE_URL", "https://vixai.atlassian.net")
+GITLAB_API_BASE = os.environ.get("GITLAB_API_BASE", "https://gitlab.com/api/v4")
 
 
 def _load_json(path: str) -> dict:
@@ -49,10 +56,28 @@ def _report_selection(instruction: str) -> None:
     print(f"[select] command={cmd!r}")
 
 
+def _gather_context(ticket: VulnTicket) -> str:
+    keyword = primary_category_keyword(ticket.text)
+    print(f"[context] searching Jira/Confluence/GitLab for: {keyword!r}")
+    block = context_module.gather_all(
+        keyword=keyword,
+        exclude_key=ticket.key,
+        jira_site_url=JIRA_SITE_URL,
+        jira_email=os.environ.get("JIRA_EMAIL", ""),
+        jira_token=os.environ.get("JIRA_API_TOKEN", ""),
+        gitlab_api_base=GITLAB_API_BASE,
+        gitlab_project_path=ticket.repo or "",
+        gitlab_token=os.environ.get("TARGET_REPO_TOKEN", ""),
+    )
+    print(f"[context] {block}")
+    return block
+
+
 def cmd_fix(args: argparse.Namespace) -> int:
     payload = _load_json(args.payload)
     ticket = VulnTicket.from_jira_payload(payload)
-    instruction = build_fix_instruction(ticket)
+    related_context = _gather_context(ticket)
+    instruction = build_fix_instruction(ticket, related_context=related_context)
 
     print(f"[fix] ticket={ticket.key} repo={ticket.repo}")
     _report_selection(instruction)

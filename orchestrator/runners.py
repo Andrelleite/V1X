@@ -82,9 +82,12 @@ def _claude_args(instruction: str, binary: str = "claude") -> list[str]:
     # changes. Rather than bypassing ALL permissions (which a safety check
     # correctly flagged as configuring an unattended agent with no approval
     # gate on anything, including arbitrary Bash), pre-approve only the
-    # specific commands this job needs: `git add` and `git commit`. Our own
-    # script handles `git push` and MR creation deterministically after
-    # this runs — Claude never needs those itself.
+    # specific commands this job needs: `git add`/`git commit` to finish
+    # the fix, plus read-only git history inspection (log/blame/show/grep)
+    # so the agent can dig into prior related changes itself if useful —
+    # safe to allow since none of these have side effects. Our own script
+    # handles `git push` and MR creation deterministically after this
+    # runs — Claude never needs those itself.
     # --output-format json: see orchestrator/cost.py — Claude Code may
     # report a real cost_usd/total_cost_usd figure directly (unlike
     # Gemini), which is strictly more accurate than any estimate we could
@@ -98,6 +101,10 @@ def _claude_args(instruction: str, binary: str = "claude") -> list[str]:
         "--allowedTools",
         "Bash(git add:*)",
         "Bash(git commit:*)",
+        "Bash(git log:*)",
+        "Bash(git blame:*)",
+        "Bash(git show:*)",
+        "Bash(git grep:*)",
         "--output-format",
         "json",
     ]

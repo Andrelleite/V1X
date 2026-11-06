@@ -28,7 +28,18 @@ def category_line(ticket_text: str) -> str:
     )
 
 
-def build_fix_instruction(ticket: VulnTicket) -> str:
+def primary_category_keyword(ticket_text: str) -> str:
+    """A plain-English search term for the ticket's top-matched category
+    (e.g. "Injection", "Server-Side Request Forgery") — used by
+    context.py as the search keyword against Jira/Confluence/GitLab.
+    Falls back to the ticket's first few words when unclassified."""
+    categories = classify(ticket_text)
+    if categories:
+        return categories[0].name
+    return " ".join(ticket_text.split()[:4])
+
+
+def build_fix_instruction(ticket: VulnTicket, related_context: str = "") -> str:
     categories = classify(ticket.text)
     sheets = cheatsheet_paths(categories)
 
@@ -40,6 +51,9 @@ def build_fix_instruction(ticket: VulnTicket) -> str:
         "(no specific cheat sheet auto-matched — classify first, then open "
         "the matching file under security/knowledge/cheatsheets/)"
     )
+    context_block = related_context or (
+        "(not gathered for this run — proceeding from the ticket alone)"
+    )
 
     return (
         "Before anything else, read CLAUDE.md in the repo root in full — it "
@@ -48,6 +62,12 @@ def build_fix_instruction(ticket: VulnTicket) -> str:
         f"Description:\n{ticket.description}\n\n"
         f"Likely OWASP category: {cat_line}\n"
         f"Relevant cheat sheet(s) to read before patching:\n{sheets_block}\n\n"
+        "Related context found in other company systems (Jira, Confluence, "
+        "this repo's own commit history) — this is a best-effort search, "
+        "not guaranteed complete; weigh it accordingly, and also search the "
+        "target repo's own git log/blame yourself if it would help (that's "
+        "a normal git command, not a disallowed tool):\n"
+        f"{context_block}\n\n"
         "Follow the Phase 2(a) decision tree in CLAUDE.md: analyze the root "
         "cause, write a surgical patch (small blast radius — do not touch "
         "unrelated code), update/add a test if a suite already covers this "

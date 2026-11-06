@@ -71,6 +71,7 @@ jobs:
           JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
           JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
         run: |
+          echo "::group::Step 1: Fetch ticket $ISSUE_KEY from Jira"
           curl -sf -u "$JIRA_EMAIL:$JIRA_API_TOKEN" \
             "https://vixai.atlassian.net/rest/api/2/issue/$ISSUE_KEY?fields=summary,description,priority" \
             -o jira_issue.json
@@ -89,7 +90,9 @@ jobs:
           }
           with open("jira_payload.json", "w") as f:
               json.dump(payload, f)
+          print(f"  -> {payload['issue_key']} ({priority}): {payload['summary']}")
           PY
+          echo "::endgroup::"
 
       - name: Copy brain context into the target checkout (never committed)
         # CLAUDE.md/GEMINI.md/security/ have to physically be inside the
@@ -99,10 +102,13 @@ jobs:
         # agent stages its fix commit, these brain files can never leak into
         # the actual PR diff on the target repo.
         run: |
+          echo "::group::Step 2: Copy the brain's knowledge base into the target checkout"
           cp CLAUDE.md target/
           cp GEMINI.md target/
           cp -r security target/
           printf 'CLAUDE.md\nGEMINI.md\nsecurity/\n' >> target/.git/info/exclude
+          echo "  -> copied CLAUDE.md, GEMINI.md, security/ (local-only, excluded from any commit)"
+          echo "::endgroup::"
 
       - name: Configure git identity in the target checkout
         working-directory: target
@@ -115,8 +121,10 @@ jobs:
         # — see orchestrator/runners.py. Installing both means the fallback
         # actually works even if Gemini errors out mid-run.
         run: |
+          echo "::group::Step 3: Install Gemini CLI and Claude Code"
           npm install -g @google/gemini-cli
           npm install -g @anthropic-ai/claude-code
+          echo "::endgroup::"
 
       - name: Restore Claude Code subscription session (optional fallback auth)
         # Only used if ANTHROPIC_API_KEY isn't set — lets the Claude
@@ -127,40 +135,57 @@ jobs:
         env:
           CLAUDE_CODE_OAUTH_CREDS: ${{ secrets.CLAUDE_CODE_OAUTH_CREDS }}
         run: |
+          echo "::group::Step 4: Restore Claude subscription session (optional fallback auth)"
           mkdir -p "$HOME/.claude"
           printf '%s' "$CLAUDE_CODE_OAUTH_CREDS" > "$HOME/.claude/.credentials.json"
           chmod 600 "$HOME/.claude/.credentials.json"
+          echo "  -> restored (used only if Gemini is unavailable or fails)"
+          echo "::endgroup::"
 
       - name: Create branch in the target repo
         working-directory: target
         run: |
+          echo "::group::Step 5: Create fix branch in target repo"
           # Suffixed with the run ID so a re-trigger on the same ticket
           # (e.g. the "Work item updated" trigger firing again on any
           # edit) never collides with a branch an earlier run pushed.
           ISSUE_KEY=$(python3 -c "import json;print(json.load(open('../jira_payload.json'))['issue_key'])")
-          git checkout -b "fix/ai-${ISSUE_KEY}-${{ github.run_id }}"
+          BRANCH="fix/ai-${ISSUE_KEY}-${{ github.run_id }}"
+          git checkout -b "$BRANCH"
+          echo "  -> $BRANCH"
+          echo "::endgroup::"
 
       - name: Run the Fixer against the target checkout
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          # Needed for the pre-fix context search (Jira/Confluence/GitLab —
+          # see orchestrator/context.py), not just the earlier Jira fetch.
+          JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
+          JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
+          TARGET_REPO_TOKEN: ${{ secrets.TARGET_REPO_TOKEN }}
         run: |
+          echo "::group::Step 6: Run the Fixer (context search, then Gemini first / Claude fallback)"
           python3 -m orchestrator.cli fix --payload jira_payload.json --repo-dir target --execute
+          echo "::endgroup::"
 
       - name: Push branch and open PR on the target repo
         working-directory: target
         env:
           GH_TOKEN: ${{ secrets.TARGET_REPO_TOKEN }}
         run: |
+          echo "::group::Step 7: Push fix branch and open the PR"
           # ../mr_description.md was written by orchestrator.cli (report.py)
           # in the previous step, from the agent's ===FIX_REPORT=== block —
-          # a rich description with a confidence meter and blast-radius
-          # badge, not bare boilerplate.
+          # a rich description with a confidence meter, blast-radius badge,
+          # impacted architecture diagram, and estimated cost, not bare
+          # boilerplate.
           ISSUE_KEY=$(python3 -c "import json;print(json.load(open('../jira_payload.json'))['issue_key'])")
           git push origin HEAD
           gh pr create \
             --title "[$ISSUE_KEY] AI Automated Fix" \
             --body-file ../mr_description.md
+          echo "::endgroup::"
 
       - name: Mark the Jira ticket done (idempotency)
         working-directory: target
@@ -168,6 +193,7 @@ jobs:
           JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
           JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
         run: |
+          echo "::group::Step 8: Mark the Jira ticket done (idempotency)"
           # Only runs after a real PR has been opened, so the "Work item
           # updated" trigger firing again on a later unrelated edit
           # doesn't re-run the whole pipeline for nothing — see
@@ -179,4 +205,5 @@ jobs:
             -H "Content-Type: application/json" \
             -d '{"update":{"labels":[{"add":"sec-ai-fix-done"}]}}' \
             "https://vixai.atlassian.net/rest/api/2/issue/${ISSUE_KEY}" \
-            || echo "warning: failed to add sec-ai-fix-done label to ${ISSUE_KEY}"
+            || echo "  -> warning: failed to add sec-ai-fix-done label to ${ISSUE_KEY}"
+          echo "::endgroup::"

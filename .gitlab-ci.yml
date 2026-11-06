@@ -38,7 +38,16 @@ ai_fix:
     - apt-get update -qq && apt-get install -y -qq python3 curl git >/dev/null
     - npm install -g @google/gemini-cli @anthropic-ai/claude-code >/dev/null
   script:
+    # All script lines in a GitLab job run in ONE continuous shell, so a
+    # function/variable defined here stays available in every later line.
+    # step/endstep wrap each stage in a labeled, collapsible log section —
+    # click any "Step N" header in the job log to expand just that part.
     - |
+      step() { echo -e "\e[0Ksection_start:$(date +%s):step_$1[collapsed=false]\r\e[0K\e[1mStep $1: $2\e[0m"; }
+      endstep() { echo -e "\e[0Ksection_end:$(date +%s):step_$1\r\e[0K"; }
+
+    - |
+      step 1 "Fetch ticket $ISSUE_KEY from Jira"
       curl -sf -u "$JIRA_EMAIL:$JIRA_API_TOKEN" \
         "https://vixai.atlassian.net/rest/api/2/issue/$ISSUE_KEY?fields=summary,description,priority" \
         -o jira_issue.json
@@ -57,9 +66,17 @@ ai_fix:
       }
       with open("jira_payload.json", "w") as f:
           json.dump(payload, f)
+      print(f"  -> {payload['issue_key']} ({priority}): {payload['summary']}")
       PY
-    - git clone "https://oauth2:${TARGET_REPO_TOKEN}@gitlab.com/${TARGET_REPO}.git" target
+      endstep 1
+
     - |
+      step 2 "Clone target repo $TARGET_REPO"
+      git clone "https://oauth2:${TARGET_REPO_TOKEN}@gitlab.com/${TARGET_REPO}.git" target
+      endstep 2
+
+    - |
+      step 3 "Resolve default branch and compute a unique fix branch name"
       PROJECT_PATH_ENCODED=$(python3 -c "import urllib.parse,os;print(urllib.parse.quote(os.environ['TARGET_REPO'], safe=''))")
       DEFAULT_BRANCH=$(curl -sf -H "PRIVATE-TOKEN: ${TARGET_REPO_TOKEN}" "https://gitlab.com/api/v4/projects/${PROJECT_PATH_ENCODED}" | python3 -c "import json,sys;print(json.load(sys.stdin)['default_branch'])")
       echo "DEFAULT_BRANCH=${DEFAULT_BRANCH}" >> build.env
@@ -67,30 +84,59 @@ ai_fix:
       # (e.g. the "Work item updated" trigger firing again on any edit)
       # never collide with a branch an earlier run already pushed.
       echo "FIX_BRANCH=fix/ai-${ISSUE_KEY}-${CI_PIPELINE_ID}" >> build.env
-    - source build.env
-    - cp CLAUDE.md target/
-    - cp GEMINI.md target/
-    - cp -r security target/
-    - printf 'CLAUDE.md\nGEMINI.md\nsecurity/\n' >> target/.git/info/exclude
+      source build.env
+      echo "  -> default branch: ${DEFAULT_BRANCH}, fix branch: ${FIX_BRANCH}"
+      endstep 3
+
     - |
+      step 4 "Copy the brain's knowledge base into the target checkout"
+      cp CLAUDE.md target/
+      cp GEMINI.md target/
+      cp -r security target/
+      printf 'CLAUDE.md\nGEMINI.md\nsecurity/\n' >> target/.git/info/exclude
+      echo "  -> copied CLAUDE.md, GEMINI.md, security/ (local-only, excluded from any commit)"
+      endstep 4
+
+    - |
+      step 5 "Restore Claude subscription session (optional fallback auth)"
       if [ -n "$CLAUDE_CODE_OAUTH_CREDS" ]; then
         mkdir -p "$HOME/.claude"
         printf '%s' "$CLAUDE_CODE_OAUTH_CREDS" > "$HOME/.claude/.credentials.json"
         chmod 600 "$HOME/.claude/.credentials.json"
+        echo "  -> restored (used only if Gemini is unavailable or fails)"
+      else
+        echo "  -> CLAUDE_CODE_OAUTH_CREDS not set, skipping (Claude fallback needs ANTHROPIC_API_KEY instead)"
       fi
-    - cd target
-    - git config user.name "AI AppSec Bot"
-    - git config user.email "ai-appsec-bot@users.noreply.gitlab.com"
-    - git checkout -b "${FIX_BRANCH}"
-    - cd ..
-    - python3 -m orchestrator.cli fix --payload jira_payload.json --repo-dir target --execute
-    - cd target
-    - git push "https://oauth2:${TARGET_REPO_TOKEN}@gitlab.com/${TARGET_REPO}.git" "HEAD:${FIX_BRANCH}"
+      endstep 5
+
     - |
+      step 6 "Create fix branch $FIX_BRANCH in target repo"
+      cd target
+      git config user.name "AI AppSec Bot"
+      git config user.email "ai-appsec-bot@users.noreply.gitlab.com"
+      git checkout -b "${FIX_BRANCH}"
+      cd ..
+      endstep 6
+
+    - |
+      step 7 "Run the Fixer (context search, then Gemini first / Claude fallback)"
+      python3 -m orchestrator.cli fix --payload jira_payload.json --repo-dir target --execute
+      endstep 7
+
+    - |
+      step 8 "Push the fix branch to $TARGET_REPO"
+      cd target
+      git push "https://oauth2:${TARGET_REPO_TOKEN}@gitlab.com/${TARGET_REPO}.git" "HEAD:${FIX_BRANCH}"
+      cd ..
+      endstep 8
+
+    - |
+      step 9 "Open the MR with the rich report as its description"
       # mr_description.md was written by orchestrator.cli (report.py) in
-      # the previous step, from the agent's ===FIX_REPORT=== block — a
-      # rich description with a confidence meter and blast-radius badge,
-      # not the bare boilerplate this used to be.
+      # step 7, from the agent's ===FIX_REPORT=== block — a rich
+      # description with a confidence meter, blast-radius badge, impacted
+      # architecture diagram, and estimated cost, not bare boilerplate.
+      cd target
       curl -sf -X POST \
         -H "PRIVATE-TOKEN: ${TARGET_REPO_TOKEN}" \
         --data-urlencode "source_branch=${FIX_BRANCH}" \
@@ -98,16 +144,20 @@ ai_fix:
         --data-urlencode "title=[${ISSUE_KEY}] AI Automated Fix" \
         --data-urlencode "description@../mr_description.md" \
         "https://gitlab.com/api/v4/projects/${PROJECT_PATH_ENCODED}/merge_requests"
+      cd ..
+      endstep 9
+
     - |
-      # Idempotency: mark the ticket done ONLY once a real MR has been
-      # opened, so the "Work item updated" trigger firing again on any
-      # later edit (status change, comment, etc.) doesn't re-run the
-      # whole pipeline for nothing -- see docs/jira-automation-rule.md's
-      # JQL, which excludes labels containing sec-ai-fix-done. A failure
-      # here doesn't fail the job: the MR already succeeded, which is the
-      # actual deliverable.
+      step 10 "Mark the Jira ticket done (idempotency)"
+      # Only runs after step 9 actually succeeded, so the "Work item
+      # updated" trigger firing again on a later unrelated edit doesn't
+      # re-run the whole pipeline for nothing -- see
+      # docs/jira-automation-rule.md's JQL, which excludes labels
+      # containing sec-ai-fix-done. A failure here doesn't fail the job:
+      # the MR already succeeded, which is the actual deliverable.
       curl -sf -X PUT -u "$JIRA_EMAIL:$JIRA_API_TOKEN" \
         -H "Content-Type: application/json" \
         -d '{"update":{"labels":[{"add":"sec-ai-fix-done"}]}}' \
         "https://vixai.atlassian.net/rest/api/2/issue/${ISSUE_KEY}" \
-        || echo "warning: failed to add sec-ai-fix-done label to ${ISSUE_KEY}"
+        || echo "  -> warning: failed to add sec-ai-fix-done label to ${ISSUE_KEY}"
+      endstep 10
