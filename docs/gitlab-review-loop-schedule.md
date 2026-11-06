@@ -1,22 +1,27 @@
-# Setting up the review-loop schedule
+# Setting up the review-loop schedule (optional)
 
 The `review_loop` job in `.gitlab-ci.yml` closes the loop with CodeRabbit:
 it polls every open pipeline-created MR for unresolved CodeRabbit
 discussion threads and has the Fixer either patch the code or post a
 false-positive defense for each one.
 
-It only runs on a GitLab CI/CD Pipeline Schedule (`$CI_PIPELINE_SOURCE ==
-"schedule"`) — never on the Jira-triggered pipeline source the `ai_fix`
-job uses. This is polling, not a live webhook, on purpose: GitLab CI has
-no native "run a job when someone comments on an MR" trigger, and a
-real-time webhook receiver would need its own always-on host outside
-this pipeline's all-GitLab-CI architecture. The tradeoff is latency —
-CodeRabbit's comment sits unanswered for up to one polling interval — not
-correctness; a thread we've already replied to and resolved drops out of
-"unresolved" on the next poll on its own, so nothing is double-handled.
+**By default it needs no setup at all.** It runs on `$CI_PIPELINE_SOURCE
+== "trigger"` — the same Jira-fired pipeline the `ai_fix` job already
+uses — so every time a Jira ticket fires the pipeline, `review_loop` also
+sweeps every currently-open pipeline-created MR for unresolved CodeRabbit
+threads, alongside `ai_fix` handling the new ticket. No Pipeline Schedule,
+no extra permissions, nothing to configure in the GitLab UI. The
+tradeoff: an MR only gets re-swept when the *next* ticket happens to fire
+a pipeline, not on a fixed cadence — if tickets stop coming in for a
+while, an open MR's unanswered CodeRabbit comment just waits.
 
-This part has to be done once, by hand, in the GitLab UI — it isn't
-something this repo's files can configure:
+For true periodic coverage independent of ticket activity, the job also
+runs on a GitLab CI/CD Pipeline Schedule (`$CI_PIPELINE_SOURCE ==
+"schedule"`) if one exists — this is optional, and needs a
+project-admin-level permission that isn't guaranteed even with a group
+Owner role, which is why it isn't the default path. If you later get
+that permission (or just want tighter latency), set one up once, by hand,
+in the GitLab UI:
 
 1. On `gitlab.com/mumbo-jumbo/juice-shop-revamped` → **Build → Pipeline
    schedules → New schedule**.

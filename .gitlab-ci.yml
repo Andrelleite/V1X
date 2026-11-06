@@ -234,17 +234,21 @@ ai_fix:
 
 # Closes the loop CLAUDE.md's Phase 2(b) describes: polls every open
 # pipeline-created MR for unresolved CodeRabbit discussion threads and
-# has the Fixer fix or defend each one. Runs only on a GitLab CI/CD
-# Pipeline Schedule (set up once in the GitLab UI, not in this file) —
-# see docs/gitlab-review-loop-schedule.md for the one-time setup and why
-# this is polling rather than a live webhook. Needs TARGET_REPO set as a
-# variable on that schedule, since there's no Jira ticket to read it from
-# on a scheduled run.
+# has the Fixer fix or defend each one. Runs as its own job alongside
+# ai_fix on the SAME trigger-sourced pipeline (Jira -> Pipeline Trigger
+# API) — piggybacking on a mechanism that's already proven to work,
+# rather than requiring a GitLab CI/CD Pipeline Schedule, which needs a
+# project-admin-level permission not every account has even with a
+# group Owner role. The tradeoff: an already-open MR only gets re-swept
+# when the NEXT Jira ticket fires a pipeline, not on a fixed interval.
+# If/when a Pipeline Schedule becomes available, this job also runs on
+# $CI_PIPELINE_SOURCE == "schedule" for true periodic coverage — see
+# docs/gitlab-review-loop-schedule.md (now optional, not required).
 review_loop:
   stage: ai-fix
   image: node:20-bookworm
   rules:
-    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+    - if: '$CI_PIPELINE_SOURCE == "trigger" || $CI_PIPELINE_SOURCE == "schedule"'
   before_script:
     - apt-get update -qq && apt-get install -y -qq python3 curl git >/dev/null
     - npm install -g @google/gemini-cli @anthropic-ai/claude-code >/dev/null
