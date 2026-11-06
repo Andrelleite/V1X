@@ -115,6 +115,36 @@ def test_render_mr_description_omits_code_section_when_agent_provides_none():
     assert "Before → After" not in description
 
 
+def test_parse_fix_report_preserves_paragraph_breaks_in_summary():
+    text = (
+        "===FIX_REPORT===\nCONFIDENCE: 60\nBLAST_RADIUS: LOW\n"
+        "SUMMARY: First paragraph, one sentence.\n"
+        "Still first paragraph, continued.\n"
+        "\n"
+        "Second paragraph entirely.\n"
+        "BLAST_RADIUS_DETAILS: low risk\nTESTS: added one\n"
+        "===END_FIX_REPORT==="
+    )
+    report = parse_fix_report(text)
+    assert report.summary == (
+        "First paragraph, one sentence. Still first paragraph, continued.\n\n"
+        "Second paragraph entirely."
+    )
+
+
+def test_render_mr_description_escapes_html_like_text_in_prose():
+    text = (
+        "===FIX_REPORT===\nCONFIDENCE: 60\nBLAST_RADIUS: LOW\n"
+        "SUMMARY: An attacker could send <script>alert(1)</script> as input.\n"
+        "BLAST_RADIUS_DETAILS: low risk\nTESTS: added one\n"
+        "===END_FIX_REPORT==="
+    )
+    report = parse_fix_report(text)
+    description = render_mr_description(TICKET, "A03 (Injection)", report)
+    assert "<script>" not in description
+    assert "&lt;script&gt;" in description
+
+
 def test_code_language_is_sanitized_to_safe_token():
     text = (
         '===FIX_REPORT===\nCONFIDENCE: 60\nBLAST_RADIUS: LOW\n'
