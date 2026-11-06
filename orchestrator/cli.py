@@ -16,6 +16,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 from . import aggregation as aggregation_module
@@ -23,6 +24,7 @@ from . import context as context_module
 from . import cost as cost_module
 from . import gitlab_review as gitlab_review_module
 from .fixer import run_fix, run_review
+from .gitlab_review import OpenThread
 from .models import Decision, ReviewComment, VulnTicket
 from .prompt_builder import (
     build_fix_instruction,
@@ -254,13 +256,59 @@ def _push_current_branch(repo_dir: str, repo: str, token: str, branch: str) -> b
     return _run_git(repo_dir, "push", url, f"HEAD:{branch}").returncode == 0
 
 
+def _handle_review_thread(
+    label: str, t: OpenThread, repo: str, repo_dir: str, token: str
+) -> bool:
+    """Routes one CodeRabbit thread through review_loop.route(), runs the
+    Fixer, and pushes a fix or posts a defense, then replies and resolves
+    the thread either way. Shared by review-loop (sweeps every open MR
+    once) and review-watch (loops on one MR until it's actually settled).
+    Returns False on any failure — the thread is deliberately left
+    unresolved so a later pass retries it rather than silently dropping it.
+    """
+    print(f"[{label}] handling MR !{t.mr_iid} discussion {t.discussion_id}")
+    decision: Decision = route(t.comment)
+    print(f"[{label}] decision.path={decision.path} reason={decision.reason!r}")
+
+    branch = _checkout_mr_branch(repo_dir, repo, token, t.mr_iid)
+    if branch is None:
+        print(f"[{label}] could not check out MR !{t.mr_iid}'s branch — skipping")
+        return False
+
+    runner, result, attempts = run_review(t.comment, decision, repo_dir=repo_dir)
+    _print_attempts(label, attempts)
+
+    response = parse_review_response(result.stdout)
+    if not response.found:
+        print(f"[{label}] no parseable ===REVIEW_RESPONSE=== block for "
+              f"MR !{t.mr_iid} — leaving thread unresolved")
+        return False
+
+    if response.path == "FIXED":
+        if not _push_current_branch(repo_dir, repo, token, branch):
+            print(f"[{label}] fix committed but push failed for "
+                  f"MR !{t.mr_iid} — leaving thread unresolved")
+            return False
+        reply = f"FIXED: {response.message}"
+    else:
+        reply = f"FALSE POSITIVE DEFENSE: {response.message}"
+
+    if not gitlab_review_module.reply_and_resolve(
+        GITLAB_API_BASE, repo, token, t.mr_iid, t.discussion_id, reply
+    ):
+        print(f"[{label}] responded but failed to reply/resolve on MR !{t.mr_iid}")
+        return False
+
+    return True
+
+
 def cmd_review_loop(args: argparse.Namespace) -> int:
     """Polls every currently-open pipeline-created MR for unresolved
-    CodeRabbit discussion threads, routes each through review_loop.route(),
-    and either pushes a fix or posts a false-positive defense — closing
-    the loop CLAUDE.md's Phase 2(b) describes. Meant to run on a GitLab
-    CI/CD Pipeline Schedule (see docs/gitlab-review-loop-schedule.md), not
-    on the Jira-triggered pipeline source."""
+    CodeRabbit discussion threads and handles each one. The backstop for
+    whatever review-watch (below) didn't catch live — an MR opened before
+    this existed, or one that hit review-watch's round cap. Runs on every
+    trigger-sourced pipeline (see .gitlab-ci.yml) and, if available, on a
+    GitLab CI/CD Pipeline Schedule too (docs/gitlab-review-loop-schedule.md)."""
     token = os.environ.get("TARGET_REPO_TOKEN", "")
     if not token or not args.repo:
         print("[review-loop] no TARGET_REPO_TOKEN/--repo — nothing to do")
@@ -279,42 +327,56 @@ def cmd_review_loop(args: argparse.Namespace) -> int:
 
     exit_code = 0
     for t in threads:
-        print(f"[review-loop] handling MR !{t.mr_iid} discussion {t.discussion_id}")
-        decision: Decision = route(t.comment)
-        print(f"[review-loop] decision.path={decision.path} reason={decision.reason!r}")
-
-        branch = _checkout_mr_branch(args.repo_dir, args.repo, token, t.mr_iid)
-        if branch is None:
-            print(f"[review-loop] could not check out MR !{t.mr_iid}'s branch — skipping")
+        if not _handle_review_thread("review-loop", t, args.repo, args.repo_dir, token):
             exit_code = 1
-            continue
+    return exit_code
 
-        runner, result, attempts = run_review(t.comment, decision, repo_dir=args.repo_dir)
-        _print_attempts("review-loop", attempts)
 
-        response = parse_review_response(result.stdout)
-        if not response.found:
-            print(f"[review-loop] no parseable ===REVIEW_RESPONSE=== block for "
-                  f"MR !{t.mr_iid} — leaving thread unresolved")
-            exit_code = 1
-            continue
+def cmd_review_watch(args: argparse.Namespace) -> int:
+    """Watches ONE just-opened MR live, right after ai_fix creates it:
+    waits for CodeRabbit's first review, handles every unresolved thread,
+    waits again for CodeRabbit's incremental re-review (it re-reviews on
+    each push), and repeats until a poll finds nothing left unresolved —
+    CodeRabbit has approved or every remaining comment was defended with
+    evidence — or --max-rounds is hit, whichever comes first. A round-cap
+    exit does NOT fail the job: the MR already exists, which is the real
+    deliverable: periodic review_loop sweeps keep trying from there."""
+    token = os.environ.get("TARGET_REPO_TOKEN", "")
+    if not token or not args.repo:
+        print("[review-watch] no TARGET_REPO_TOKEN/--repo — nothing to do")
+        return 0
 
-        if response.path == "FIXED":
-            if not _push_current_branch(args.repo_dir, args.repo, token, branch):
-                print(f"[review-loop] fix committed but push failed for "
-                      f"MR !{t.mr_iid} — leaving thread unresolved")
+    if not args.execute:
+        print(f"[review-watch] (dry run) would watch MR !{args.mr_iid} "
+              f"for up to {args.max_rounds} round(s)")
+        return 0
+
+    print(f"[review-watch] waiting {args.initial_wait_seconds}s for "
+          f"CodeRabbit's first review of MR !{args.mr_iid}")
+    time.sleep(args.initial_wait_seconds)
+
+    exit_code = 0
+    for round_num in range(1, args.max_rounds + 1):
+        threads = gitlab_review_module.list_unresolved_coderabbit_threads(
+            GITLAB_API_BASE, args.repo, token, args.mr_iid
+        )
+        if not threads:
+            print(f"[review-watch] round {round_num}: no unresolved CodeRabbit "
+                  f"threads on MR !{args.mr_iid} — done")
+            return exit_code
+
+        print(f"[review-watch] round {round_num}: {len(threads)} unresolved thread(s)")
+        for t in threads:
+            if not _handle_review_thread("review-watch", t, args.repo, args.repo_dir, token):
                 exit_code = 1
-                continue
-            reply = f"FIXED: {response.message}"
-        else:
-            reply = f"FALSE POSITIVE DEFENSE: {response.message}"
 
-        if not gitlab_review_module.reply_and_resolve(
-            GITLAB_API_BASE, args.repo, token, t.mr_iid, t.discussion_id, reply
-        ):
-            print(f"[review-loop] responded but failed to reply/resolve on MR !{t.mr_iid}")
-            exit_code = 1
+        if round_num < args.max_rounds:
+            print(f"[review-watch] waiting {args.poll_interval_seconds}s for "
+                  f"CodeRabbit's next review")
+            time.sleep(args.poll_interval_seconds)
 
+    print(f"[review-watch] hit max rounds ({args.max_rounds}) — MR !{args.mr_iid} "
+          "may still have unresolved threads; the periodic review_loop sweep will keep trying")
     return exit_code
 
 
@@ -363,6 +425,19 @@ def main(argv: list[str] | None = None) -> int:
     review_loop_p.add_argument("--repo-dir", default="target")
     review_loop_p.add_argument("--execute", action="store_true")
     review_loop_p.set_defaults(func=cmd_review_loop)
+
+    review_watch_p = sub.add_parser(
+        "review-watch",
+        help="Watch one just-opened MR live until CodeRabbit settles or --max-rounds is hit",
+    )
+    review_watch_p.add_argument("--repo", required=True, help="TARGET_REPO, e.g. group/name")
+    review_watch_p.add_argument("--mr-iid", required=True, type=int)
+    review_watch_p.add_argument("--repo-dir", default="target")
+    review_watch_p.add_argument("--execute", action="store_true")
+    review_watch_p.add_argument("--initial-wait-seconds", type=int, default=90)
+    review_watch_p.add_argument("--poll-interval-seconds", type=int, default=60)
+    review_watch_p.add_argument("--max-rounds", type=int, default=5)
+    review_watch_p.set_defaults(func=cmd_review_watch)
 
     args = parser.parse_args(argv)
     return args.func(args)

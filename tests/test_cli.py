@@ -132,6 +132,92 @@ def test_review_loop_execute_defense_skips_push(capsys, monkeypatch):
     assert reply_mock.call_args.args[-1] == "FALSE POSITIVE DEFENSE: config.ts:5 shows this is a build-time constant."
 
 
+def test_review_watch_without_token_is_a_noop(capsys, monkeypatch):
+    monkeypatch.delenv("TARGET_REPO_TOKEN", raising=False)
+    rc = main(["review-watch", "--repo", "group/repo", "--mr-iid", "9"])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "nothing to do" in out
+
+
+def test_review_watch_dry_run_does_not_sleep_or_poll(capsys, monkeypatch):
+    monkeypatch.setenv("TARGET_REPO_TOKEN", "tok")
+    with patch("orchestrator.cli.time.sleep") as sleep_mock, \
+         patch("orchestrator.cli.gitlab_review_module.list_unresolved_coderabbit_threads") as list_mock:
+        rc = main(["review-watch", "--repo", "group/repo", "--mr-iid", "9"])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "(dry run) would watch MR !9" in out
+    sleep_mock.assert_not_called()
+    list_mock.assert_not_called()
+
+
+def test_review_watch_exits_as_soon_as_no_threads_remain(monkeypatch):
+    monkeypatch.setenv("TARGET_REPO_TOKEN", "tok")
+    with patch("orchestrator.cli.time.sleep") as sleep_mock, \
+         patch("orchestrator.cli.gitlab_review_module.list_unresolved_coderabbit_threads", return_value=[]), \
+         patch("orchestrator.cli._handle_review_thread") as handle_mock:
+        rc = main([
+            "review-watch", "--repo", "group/repo", "--mr-iid", "9", "--execute",
+            "--max-rounds", "5",
+        ])
+    assert rc == 0
+    handle_mock.assert_not_called()
+    sleep_mock.assert_called_once()  # only the initial wait, never a between-round wait
+
+
+def test_review_watch_loops_until_threads_clear(monkeypatch):
+    monkeypatch.setenv("TARGET_REPO_TOKEN", "tok")
+    thread = OpenThread(mr_iid=9, discussion_id="disc-1", comment=ReviewComment(body="x"))
+    with patch("orchestrator.cli.time.sleep") as sleep_mock, \
+         patch(
+             "orchestrator.cli.gitlab_review_module.list_unresolved_coderabbit_threads",
+             side_effect=[[thread], []],
+         ) as list_mock, \
+         patch("orchestrator.cli._handle_review_thread", return_value=True) as handle_mock:
+        rc = main([
+            "review-watch", "--repo", "group/repo", "--mr-iid", "9", "--execute",
+            "--max-rounds", "5",
+        ])
+    assert rc == 0
+    assert list_mock.call_count == 2  # round 1 (found one), round 2 (clear)
+    handle_mock.assert_called_once()
+    assert sleep_mock.call_count == 2  # initial wait + one between-round wait
+
+
+def test_review_watch_stops_at_max_rounds_without_failing_the_job(monkeypatch):
+    monkeypatch.setenv("TARGET_REPO_TOKEN", "tok")
+    thread = OpenThread(mr_iid=9, discussion_id="disc-1", comment=ReviewComment(body="x"))
+    with patch("orchestrator.cli.time.sleep"), \
+         patch(
+             "orchestrator.cli.gitlab_review_module.list_unresolved_coderabbit_threads",
+             return_value=[thread],
+         ) as list_mock, \
+         patch("orchestrator.cli._handle_review_thread", return_value=True):
+        rc = main([
+            "review-watch", "--repo", "group/repo", "--mr-iid", "9", "--execute",
+            "--max-rounds", "3",
+        ])
+    assert rc == 0  # hitting the round cap is not itself a failure
+    assert list_mock.call_count == 3
+
+
+def test_review_watch_reports_failure_when_a_thread_cannot_be_handled(monkeypatch):
+    monkeypatch.setenv("TARGET_REPO_TOKEN", "tok")
+    thread = OpenThread(mr_iid=9, discussion_id="disc-1", comment=ReviewComment(body="x"))
+    with patch("orchestrator.cli.time.sleep"), \
+         patch(
+             "orchestrator.cli.gitlab_review_module.list_unresolved_coderabbit_threads",
+             side_effect=[[thread], []],
+         ), \
+         patch("orchestrator.cli._handle_review_thread", return_value=False):
+        rc = main([
+            "review-watch", "--repo", "group/repo", "--mr-iid", "9", "--execute",
+            "--max-rounds", "5",
+        ])
+    assert rc == 1
+
+
 def test_review_loop_execute_marks_failure_when_checkout_fails(monkeypatch):
     monkeypatch.setenv("TARGET_REPO_TOKEN", "tok")
     thread = OpenThread(

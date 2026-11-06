@@ -203,6 +203,7 @@ ai_fix:
           --data-urlencode "title@mr_title.txt" \
           --data-urlencode "description@mr_description_merged.md" \
           "https://gitlab.com/api/v4/projects/${PROJECT_PATH_ENCODED}/merge_requests/${AGGREGATE_MR_IID}"
+        echo "MR_IID=${AGGREGATE_MR_IID}" >> build.env
         echo "  -> updated MR !${AGGREGATE_MR_IID} to also cover ${ISSUE_KEY}"
       else
         curl -sf -X POST \
@@ -211,14 +212,31 @@ ai_fix:
           --data-urlencode "target_branch=${DEFAULT_BRANCH}" \
           --data-urlencode "title=[${ISSUE_KEY}] AI Automated Fix" \
           --data-urlencode "description@../mr_description.md" \
-          "https://gitlab.com/api/v4/projects/${PROJECT_PATH_ENCODED}/merge_requests"
+          "https://gitlab.com/api/v4/projects/${PROJECT_PATH_ENCODED}/merge_requests" \
+          -o ../mr_response.json
         cd ..
-        echo "  -> opened a new MR on ${FIX_BRANCH}"
+        NEW_MR_IID=$(python3 -c "import json; print(json.load(open('mr_response.json'))['iid'])")
+        echo "MR_IID=${NEW_MR_IID}" >> build.env
+        echo "  -> opened a new MR !${NEW_MR_IID} on ${FIX_BRANCH}"
       fi
+      source build.env
       endstep 10
 
     - |
-      step 11 "Mark the Jira ticket done (idempotency)"
+      step 11 "Watch the MR live: respond to CodeRabbit until it settles"
+      # Waits for CodeRabbit's first review, handles every unresolved
+      # thread (fix or defend, same Phase 2(b) decision tree), waits for
+      # its incremental re-review, repeats -- up to --max-rounds. Hitting
+      # the cap doesn't fail the job: the MR already exists, which is the
+      # real deliverable, and the review_loop job keeps sweeping it on
+      # every later trigger as a backstop.
+      python3 -m orchestrator.cli review-watch \
+        --repo "${TARGET_REPO}" --mr-iid "${MR_IID}" --repo-dir target --execute \
+        || echo "  -> review-watch did not fully settle MR !${MR_IID} -- review_loop will keep trying"
+      endstep 11
+
+    - |
+      step 12 "Mark the Jira ticket done (idempotency)"
       # Only runs after step 10 actually succeeded, so the "Work item
       # updated" trigger firing again on a later unrelated edit doesn't
       # re-run the whole pipeline for nothing -- see
@@ -230,7 +248,7 @@ ai_fix:
         -d '{"update":{"labels":[{"add":"sec-ai-fix-done"}]}}' \
         "https://vixai.atlassian.net/rest/api/2/issue/${ISSUE_KEY}" \
         || echo "  -> warning: failed to add sec-ai-fix-done label to ${ISSUE_KEY}"
-      endstep 11
+      endstep 12
 
 # Closes the loop CLAUDE.md's Phase 2(b) describes: polls every open
 # pipeline-created MR for unresolved CodeRabbit discussion threads and
