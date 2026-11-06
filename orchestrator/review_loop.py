@@ -9,7 +9,15 @@ matches or no evidence is available (same rule as CLAUDE.md Path A/B).
 """
 from __future__ import annotations
 
+import re
+from dataclasses import dataclass
+
 from .models import Decision, ReviewComment
+
+_RESPONSE_START = "===REVIEW_RESPONSE==="
+_RESPONSE_END = "===END_REVIEW_RESPONSE==="
+_VALID_RESPONSE_PATHS = ("FIXED", "FALSE_POSITIVE_DEFENSE")
+_FIELD_RE = re.compile(r"^([A-Z_]+):\s*(.*)$")
 
 FP_PATTERNS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("already_mitigated_upstream", (
@@ -79,3 +87,43 @@ def route(comment: ReviewComment, evidence: str | None = None) -> Decision:
         candidate_fp_patterns=patterns,
         requires_evidence=True,
     )
+
+
+@dataclass(frozen=True)
+class ReviewResponse:
+    """What the agent decided to do about a review comment, parsed from
+    its ===REVIEW_RESPONSE=== block (see prompt_builder.build_review_instruction).
+    `message` is posted back verbatim as the reply on the review thread."""
+
+    found: bool
+    path: str | None = None  # "FIXED" | "FALSE_POSITIVE_DEFENSE"
+    message: str = ""
+
+
+def parse_review_response(text: str) -> ReviewResponse:
+    s = text.find(_RESPONSE_START)
+    e = text.find(_RESPONSE_END)
+    if s == -1 or e == -1 or e < s:
+        return ReviewResponse(found=False)
+    block = text[s + len(_RESPONSE_START) : e]
+
+    path: str | None = None
+    message_words: list[str] = []
+    current_key: str | None = None
+    for line in block.splitlines():
+        stripped = line.strip()
+        match = _FIELD_RE.match(stripped)
+        if match:
+            current_key = match.group(1)
+            if current_key == "PATH":
+                path = match.group(2).strip().upper() or None
+            elif current_key == "MESSAGE" and match.group(2):
+                message_words.append(match.group(2))
+            continue
+        if current_key == "MESSAGE" and stripped:
+            message_words.append(stripped)
+
+    if path not in _VALID_RESPONSE_PATHS:
+        path = None
+
+    return ReviewResponse(found=path is not None, path=path, message=" ".join(message_words).strip())

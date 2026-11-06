@@ -14,12 +14,14 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import subprocess
 import sys
 from pathlib import Path
 
 from . import aggregation as aggregation_module
 from . import context as context_module
 from . import cost as cost_module
+from . import gitlab_review as gitlab_review_module
 from .fixer import run_fix, run_review
 from .models import Decision, ReviewComment, VulnTicket
 from .prompt_builder import (
@@ -29,7 +31,7 @@ from .prompt_builder import (
     primary_category_keyword,
 )
 from .report import parse_fix_report, render_mr_description
-from .review_loop import route
+from .review_loop import parse_review_response, route
 from .runners import build_command, claude_uses_subscription, select_runner
 
 JIRA_SITE_URL = os.environ.get("JIRA_SITE_URL", "https://vixai.atlassian.net")
@@ -214,6 +216,97 @@ def cmd_review(args: argparse.Namespace) -> int:
     return result.returncode
 
 
+def _run_git(repo_dir: str, *args: str) -> subprocess.CompletedProcess:
+    return subprocess.run(["git", *args], cwd=repo_dir, capture_output=True, text=True)
+
+
+def _checkout_mr_branch(repo_dir: str, repo: str, token: str, mr_iid: int) -> str | None:
+    """Fetches an MR's source branch and checks it out in the already-
+    cloned `repo_dir`. Returns the branch name on success, None if the MR
+    can't be found or the fetch/checkout fails."""
+    mr = aggregation_module.get_mr(GITLAB_API_BASE, repo, token, mr_iid)
+    branch = (mr or {}).get("source_branch")
+    if not branch:
+        return None
+    url = f"https://oauth2:{token}@gitlab.com/{repo}.git"
+    if _run_git(repo_dir, "fetch", url, branch).returncode != 0:
+        return None
+    if _run_git(repo_dir, "checkout", "FETCH_HEAD", "-B", branch).returncode != 0:
+        return None
+    return branch
+
+
+def _push_current_branch(repo_dir: str, repo: str, token: str, branch: str) -> bool:
+    url = f"https://oauth2:{token}@gitlab.com/{repo}.git"
+    return _run_git(repo_dir, "push", url, f"HEAD:{branch}").returncode == 0
+
+
+def cmd_review_loop(args: argparse.Namespace) -> int:
+    """Polls every currently-open pipeline-created MR for unresolved
+    CodeRabbit discussion threads, routes each through review_loop.route(),
+    and either pushes a fix or posts a false-positive defense — closing
+    the loop CLAUDE.md's Phase 2(b) describes. Meant to run on a GitLab
+    CI/CD Pipeline Schedule (see docs/gitlab-review-loop-schedule.md), not
+    on the Jira-triggered pipeline source."""
+    token = os.environ.get("TARGET_REPO_TOKEN", "")
+    if not token or not args.repo:
+        print("[review-loop] no TARGET_REPO_TOKEN/--repo — nothing to do")
+        return 0
+
+    threads = gitlab_review_module.list_all_unresolved_threads(
+        GITLAB_API_BASE, args.repo, token
+    )
+    print(f"[review-loop] found {len(threads)} unresolved CodeRabbit thread(s)")
+
+    if not args.execute:
+        for t in threads:
+            print(f"[review-loop] (dry run) would handle MR !{t.mr_iid} "
+                  f"discussion {t.discussion_id}: {t.comment.body[:80]!r}")
+        return 0
+
+    exit_code = 0
+    for t in threads:
+        print(f"[review-loop] handling MR !{t.mr_iid} discussion {t.discussion_id}")
+        decision: Decision = route(t.comment)
+        print(f"[review-loop] decision.path={decision.path} reason={decision.reason!r}")
+
+        branch = _checkout_mr_branch(args.repo_dir, args.repo, token, t.mr_iid)
+        if branch is None:
+            print(f"[review-loop] could not check out MR !{t.mr_iid}'s branch — skipping")
+            exit_code = 1
+            continue
+
+        runner, result = run_review(t.comment, decision, repo_dir=args.repo_dir)
+        print(f"[review-loop] ran with backend={runner.name}")
+        print(result.stdout)
+        print(result.stderr, file=sys.stderr)
+
+        response = parse_review_response(result.stdout)
+        if not response.found:
+            print(f"[review-loop] no parseable ===REVIEW_RESPONSE=== block for "
+                  f"MR !{t.mr_iid} — leaving thread unresolved")
+            exit_code = 1
+            continue
+
+        if response.path == "FIXED":
+            if not _push_current_branch(args.repo_dir, args.repo, token, branch):
+                print(f"[review-loop] fix committed but push failed for "
+                      f"MR !{t.mr_iid} — leaving thread unresolved")
+                exit_code = 1
+                continue
+            reply = f"FIXED: {response.message}"
+        else:
+            reply = f"FALSE POSITIVE DEFENSE: {response.message}"
+
+        if not gitlab_review_module.reply_and_resolve(
+            GITLAB_API_BASE, args.repo, token, t.mr_iid, t.discussion_id, reply
+        ):
+            print(f"[review-loop] responded but failed to reply/resolve on MR !{t.mr_iid}")
+            exit_code = 1
+
+    return exit_code
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="orchestrator")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -250,6 +343,15 @@ def main(argv: list[str] | None = None) -> int:
     agg_update_p.add_argument("--title-out", default="mr_title.txt")
     agg_update_p.add_argument("--description-out", default="mr_description_merged.md")
     agg_update_p.set_defaults(func=cmd_prepare_mr_update)
+
+    review_loop_p = sub.add_parser(
+        "review-loop",
+        help="Poll open fix MRs for unresolved CodeRabbit threads and respond to each",
+    )
+    review_loop_p.add_argument("--repo", required=True, help="TARGET_REPO, e.g. group/name")
+    review_loop_p.add_argument("--repo-dir", default="target")
+    review_loop_p.add_argument("--execute", action="store_true")
+    review_loop_p.set_defaults(func=cmd_review_loop)
 
     args = parser.parse_args(argv)
     return args.func(args)

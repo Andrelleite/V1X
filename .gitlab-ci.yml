@@ -231,3 +231,58 @@ ai_fix:
         "https://vixai.atlassian.net/rest/api/2/issue/${ISSUE_KEY}" \
         || echo "  -> warning: failed to add sec-ai-fix-done label to ${ISSUE_KEY}"
       endstep 11
+
+# Closes the loop CLAUDE.md's Phase 2(b) describes: polls every open
+# pipeline-created MR for unresolved CodeRabbit discussion threads and
+# has the Fixer fix or defend each one. Runs only on a GitLab CI/CD
+# Pipeline Schedule (set up once in the GitLab UI, not in this file) —
+# see docs/gitlab-review-loop-schedule.md for the one-time setup and why
+# this is polling rather than a live webhook. Needs TARGET_REPO set as a
+# variable on that schedule, since there's no Jira ticket to read it from
+# on a scheduled run.
+review_loop:
+  stage: ai-fix
+  image: node:20-bookworm
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+  before_script:
+    - apt-get update -qq && apt-get install -y -qq python3 curl git >/dev/null
+    - npm install -g @google/gemini-cli @anthropic-ai/claude-code >/dev/null
+  script:
+    - |
+      step() { echo -e "\e[0Ksection_start:$(date +%s):step_$1[collapsed=false]\r\e[0K\e[1mStep $1: $2\e[0m"; }
+      endstep() { echo -e "\e[0Ksection_end:$(date +%s):step_$1\r\e[0K"; }
+
+    - |
+      step 1 "Clone target repo $TARGET_REPO and configure the bot identity"
+      git clone "https://oauth2:${TARGET_REPO_TOKEN}@gitlab.com/${TARGET_REPO}.git" target
+      cd target
+      git config user.name "AI AppSec Bot"
+      git config user.email "ai-appsec-bot@users.noreply.gitlab.com"
+      cd ..
+      endstep 1
+
+    - |
+      step 2 "Copy the brain's knowledge base into the target checkout"
+      cp CLAUDE.md target/
+      cp GEMINI.md target/
+      cp -r security target/
+      printf 'CLAUDE.md\nGEMINI.md\nsecurity/\n' >> target/.git/info/exclude
+      endstep 2
+
+    - |
+      step 3 "Restore Claude subscription session (optional fallback auth)"
+      if [ -n "$CLAUDE_CODE_OAUTH_CREDS" ]; then
+        mkdir -p "$HOME/.claude"
+        printf '%s' "$CLAUDE_CODE_OAUTH_CREDS" > "$HOME/.claude/.credentials.json"
+        chmod 600 "$HOME/.claude/.credentials.json"
+        echo "  -> restored (used only if Gemini is unavailable or fails)"
+      else
+        echo "  -> CLAUDE_CODE_OAUTH_CREDS not set, skipping (Claude fallback needs ANTHROPIC_API_KEY instead)"
+      fi
+      endstep 3
+
+    - |
+      step 4 "Poll open fix MRs and respond to every unresolved CodeRabbit thread"
+      python3 -m orchestrator.cli review-loop --repo "${TARGET_REPO}" --repo-dir target --execute
+      endstep 4

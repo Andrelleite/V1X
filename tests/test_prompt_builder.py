@@ -72,6 +72,8 @@ def test_build_review_instruction_defend_path_demands_evidence():
 
     assert "FALSE POSITIVE DEFENSE" in instruction
     assert "cite concrete evidence" in instruction
+    assert "===REVIEW_RESPONSE===" in instruction
+    assert "FALSE_POSITIVE_DEFENSE" in instruction
 
 
 def test_build_review_instruction_fix_path_defaults_safely():
