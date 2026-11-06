@@ -51,7 +51,12 @@ class Runner:
 
 def _gemini_args(instruction: str, binary: str = "gemini") -> list[str]:
     model = os.environ.get("GEMINI_MODEL", "gemini-2.5-pro")
-    return [binary, "-p", instruction, "-m", model, "--approval-mode=yolo"]
+    # --skip-trust bypasses Gemini CLI's workspace-trust gate, which is a
+    # SEPARATE check from --approval-mode: without it, in a headless/CI
+    # environment with no TTY to grant trust interactively, Gemini silently
+    # downgrades approval-mode back to "default" (observed in a real CI
+    # run) and then fails outright since nothing can approve its tool calls.
+    return [binary, "-p", instruction, "-m", model, "--approval-mode=yolo", "--skip-trust"]
 
 
 def _claude_args(instruction: str, binary: str = "claude") -> list[str]:
