@@ -50,7 +50,11 @@ class Runner:
 
 
 def _gemini_args(instruction: str, binary: str = "gemini") -> list[str]:
-    model = os.environ.get("GEMINI_MODEL", "gemini-2.5-pro")
+    # gemini-2.5-pro is retired for new API users as of a real CI run's
+    # error (404 ModelNotFoundError) — Google's own error message named
+    # this as the replacement. Override via GEMINI_MODEL if this drifts
+    # again; preview models can be renamed/retired on short notice.
+    model = os.environ.get("GEMINI_MODEL", "gemini-3.1-pro-preview")
     # --skip-trust bypasses Gemini CLI's workspace-trust gate, which is a
     # SEPARATE check from --approval-mode: without it, in a headless/CI
     # environment with no TTY to grant trust interactively, Gemini silently
