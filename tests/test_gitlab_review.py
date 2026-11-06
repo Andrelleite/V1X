@@ -7,6 +7,7 @@ from orchestrator.gitlab_review import (
     list_all_unresolved_threads,
     list_unresolved_coderabbit_threads,
     reply_and_resolve,
+    trigger_review,
 )
 
 
@@ -112,4 +113,19 @@ def test_reply_and_resolve_false_when_resolve_fails():
         ok = reply_and_resolve(
             "https://gitlab.com/api/v4", "group/repo", "tok", 9, "disc-1", "FIXED: done"
         )
+    assert not ok
+
+
+def test_trigger_review_posts_slash_command_note():
+    with patch("orchestrator.gitlab_review._call", return_value=201) as call_mock:
+        ok = trigger_review("https://gitlab.com/api/v4", "group/repo", "tok", 9)
+    assert ok
+    args, kwargs = call_mock.call_args
+    assert args[0] == "https://gitlab.com/api/v4/projects/group%2Frepo/merge_requests/9/notes"
+    assert args[2] == {"body": "@coderabbitai review"}
+
+
+def test_trigger_review_false_on_failure():
+    with patch("orchestrator.gitlab_review._call", return_value=500):
+        ok = trigger_review("https://gitlab.com/api/v4", "group/repo", "tok", 9)
     assert not ok

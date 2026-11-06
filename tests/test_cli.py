@@ -98,11 +98,13 @@ def test_review_loop_execute_fixes_pushes_and_resolves(capsys, monkeypatch):
          patch("orchestrator.cli._checkout_mr_branch", return_value="fix/ai-VD-9-1"), \
          patch("orchestrator.cli.run_review", return_value=(fake_runner, fake_result, [(fake_runner, fake_result)])), \
          patch("orchestrator.cli._push_current_branch", return_value=True) as push_mock, \
+         patch("orchestrator.cli.gitlab_review_module.trigger_review", return_value=True) as trigger_mock, \
          patch("orchestrator.cli.gitlab_review_module.reply_and_resolve", return_value=True) as reply_mock:
         rc = main(["review-loop", "--repo", "group/repo", "--execute"])
 
     assert rc == 0
     push_mock.assert_called_once_with("target", "group/repo", "tok", "fix/ai-VD-9-1")
+    trigger_mock.assert_called_once_with("https://gitlab.com/api/v4", "group/repo", "tok", 9)
     reply_mock.assert_called_once()
     assert reply_mock.call_args.args[-1] == "FIXED: Added validation."
 

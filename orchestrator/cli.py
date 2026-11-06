@@ -290,6 +290,11 @@ def _handle_review_thread(
                   f"MR !{t.mr_iid} — leaving thread unresolved")
             return False
         reply = f"FIXED: {response.message}"
+        # Don't rely on "Incremental review" auto-firing within our wait
+        # window -- explicitly ask for a fresh review so the next poll
+        # round has something real to check instead of hoping.
+        if not gitlab_review_module.trigger_review(GITLAB_API_BASE, repo, token, t.mr_iid):
+            print(f"[{label}] pushed the fix but failed to trigger a re-review on MR !{t.mr_iid}")
     else:
         reply = f"FALSE POSITIVE DEFENSE: {response.message}"
 

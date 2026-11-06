@@ -140,3 +140,16 @@ def reply_and_resolve(
 
     status = _call(f"{base}?resolved=true", headers, None, "PUT")
     return status is not None and status < 300
+
+
+def trigger_review(api_base: str, project_path: str, token: str, mr_iid: int) -> bool:
+    """Posts CodeRabbit's `@coderabbitai review` slash-command as a plain
+    MR-level note, forcing a fresh review deterministically rather than
+    relying on "Incremental review" auto-firing on its own timing after a
+    push — review-watch calls this right after pushing a fix, so the next
+    poll round has something real to find instead of hoping CodeRabbit
+    noticed the new commit within the wait window."""
+    encoded = urllib.parse.quote(project_path, safe="")
+    url = f"{api_base}/projects/{encoded}/merge_requests/{mr_iid}/notes"
+    status = _call(url, {"PRIVATE-TOKEN": token}, {"body": "@coderabbitai review"}, "POST")
+    return status is not None and status < 300
