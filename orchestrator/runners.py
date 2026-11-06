@@ -64,7 +64,26 @@ def _gemini_args(instruction: str, binary: str = "gemini") -> list[str]:
 
 
 def _claude_args(instruction: str, binary: str = "claude") -> list[str]:
-    return [binary, "-p", instruction, "--permission-mode", "acceptEdits"]
+    # acceptEdits only auto-approves the Edit/Write tools, NOT Bash — a real
+    # CI run showed Claude write the fix to disk successfully but then get
+    # stuck asking for approval on `git add`/`git commit` (nobody's there to
+    # approve it in headless CI), so the branch got pushed with zero actual
+    # changes. Rather than bypassing ALL permissions (which a safety check
+    # correctly flagged as configuring an unattended agent with no approval
+    # gate on anything, including arbitrary Bash), pre-approve only the
+    # specific commands this job needs: `git add` and `git commit`. Our own
+    # script handles `git push` and MR creation deterministically after
+    # this runs — Claude never needs those itself.
+    return [
+        binary,
+        "-p",
+        instruction,
+        "--permission-mode",
+        "acceptEdits",
+        "--allowedTools",
+        "Bash(git add:*)",
+        "Bash(git commit:*)",
+    ]
 
 
 def _gemini_configured() -> bool:
