@@ -46,6 +46,21 @@ def _issue_url(issue_key: str) -> str:
     return f"{JIRA_SITE_URL}/browse/{issue_key}"
 
 
+def _print_attempts(label: str, attempts: list) -> None:
+    """Prints every backend actually attempted, not just the final one —
+    a Gemini failure that falls through to Claude used to be completely
+    invisible in the job log (only Claude's unrelated failure ever
+    printed), which defeats the point of readable CI logs."""
+    for runner, result in attempts[:-1]:
+        detail = (result.stdout or result.stderr or "").strip().replace("\n", " ")[:300]
+        print(f"[{label}] {runner.name} failed (exit {result.returncode}), "
+              f"falling back: {detail}")
+    final_runner, final_result = attempts[-1]
+    print(f"[{label}] ran with backend={final_runner.name} (exit {final_result.returncode})")
+    print(final_result.stdout)
+    print(final_result.stderr, file=sys.stderr)
+
+
 def _report_selection(instruction: str) -> None:
     runner, skipped = select_runner()
     for note in skipped:
@@ -98,10 +113,8 @@ def cmd_fix(args: argparse.Namespace) -> int:
     instruction = build_fix_instruction(ticket, related_context=related_context)
     _report_selection(instruction)
 
-    runner, result = run_fix(ticket, repo_dir=args.repo_dir)
-    print(f"[fix] ran with backend={runner.name}")
-    print(result.stdout)
-    print(result.stderr, file=sys.stderr)
+    runner, result, attempts = run_fix(ticket, repo_dir=args.repo_dir)
+    _print_attempts("fix", attempts)
 
     run_cost = cost_module.extract(
         runner.name, result.stdout, using_subscription=claude_uses_subscription()
@@ -209,10 +222,8 @@ def cmd_review(args: argparse.Namespace) -> int:
         print("[review] dry run — pass --execute to actually invoke a backend")
         return 0
 
-    runner, result = run_review(comment, decision, repo_dir=args.repo_dir)
-    print(f"[review] ran with backend={runner.name}")
-    print(result.stdout)
-    print(result.stderr, file=sys.stderr)
+    runner, result, attempts = run_review(comment, decision, repo_dir=args.repo_dir)
+    _print_attempts("review", attempts)
     return result.returncode
 
 
@@ -276,10 +287,8 @@ def cmd_review_loop(args: argparse.Namespace) -> int:
             exit_code = 1
             continue
 
-        runner, result = run_review(t.comment, decision, repo_dir=args.repo_dir)
-        print(f"[review-loop] ran with backend={runner.name}")
-        print(result.stdout)
-        print(result.stderr, file=sys.stderr)
+        runner, result, attempts = run_review(t.comment, decision, repo_dir=args.repo_dir)
+        _print_attempts("review-loop", attempts)
 
         response = parse_review_response(result.stdout)
         if not response.found:

@@ -14,13 +14,13 @@ from .runners import Runner, run_with_fallback
 
 def run_fix(
     ticket: VulnTicket, repo_dir: str
-) -> tuple[Runner, subprocess.CompletedProcess]:
+) -> tuple[Runner, subprocess.CompletedProcess, list[tuple[Runner, subprocess.CompletedProcess]]]:
     instruction = build_fix_instruction(ticket)
     return run_with_fallback(instruction, repo_dir)
 
 
 def run_review(
     comment: ReviewComment, decision: Decision, repo_dir: str
-) -> tuple[Runner, subprocess.CompletedProcess]:
+) -> tuple[Runner, subprocess.CompletedProcess, list[tuple[Runner, subprocess.CompletedProcess]]]:
     instruction = build_review_instruction(comment, decision)
     return run_with_fallback(instruction, repo_dir)

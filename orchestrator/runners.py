@@ -165,14 +165,19 @@ def run_with_fallback(
     instruction: str,
     repo_dir: str,
     priority: tuple[Runner, ...] = DEFAULT_PRIORITY,
-) -> tuple[Runner, subprocess.CompletedProcess]:
+) -> tuple[Runner, subprocess.CompletedProcess, list[tuple[Runner, subprocess.CompletedProcess]]]:
     """Try each runner in priority order. A runner that's unavailable
     (binary missing or its API key env var unset) is skipped silently; a
-    runner that IS available but exits non-zero counts as a real attempt —
-    its result is remembered and returned if nothing later succeeds, never
-    swallowed.
+    runner that IS available but exits non-zero counts as a real attempt.
+
+    Returns (final_runner, final_result, attempts) — `attempts` is every
+    runner actually executed, in order, not just the one returned. Without
+    this, a Gemini failure that falls through to Claude is invisible in
+    the caller's log (a real gap hit in CI: Gemini's actual error was
+    never printed, only Claude's unrelated "Not logged in" from the
+    fallback attempt that ran after it).
     """
-    last_attempt: tuple[Runner, subprocess.CompletedProcess] | None = None
+    attempts: list[tuple[Runner, subprocess.CompletedProcess]] = []
     skip_reasons: list[str] = []
 
     for runner in priority:
@@ -182,12 +187,13 @@ def run_with_fallback(
 
         cmd = build_command(instruction, runner)
         result = subprocess.run(cmd, cwd=repo_dir, capture_output=True, text=True)
+        attempts.append((runner, result))
         if result.returncode == 0:
-            return runner, result
-        last_attempt = (runner, result)
+            return runner, result, attempts
 
-    if last_attempt:
-        return last_attempt
+    if attempts:
+        last_runner, last_result = attempts[-1]
+        return last_runner, last_result, attempts
 
     raise RuntimeError(
         "No coding-agent backend is available. " + "; ".join(skip_reasons)
