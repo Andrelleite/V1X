@@ -18,6 +18,18 @@ Tag any ticket you want the pipeline to pick up with the label
 **`sec-ai-fix`**. Nothing fires without it, so unrelated `VD` tickets are
 never touched by accident.
 
+**Trigger is "Work item created" OR "Work item updated"** (added later so
+relabeling an existing ticket also works, not just brand-new ones) —
+which means *any* edit to an already-labeled ticket re-fires the whole
+pipeline, a real full-token-cost LLM run each time, not just label
+changes. To stop that from silently burning tokens on routine edits
+(status changes, comments, etc.), the pipeline adds a second label,
+**`sec-ai-fix-done`**, to the ticket once it has actually opened an
+MR/PR — and the JQL condition below excludes tickets that already have
+it. If you want to force a genuine re-run on a ticket already marked
+done, remove `sec-ai-fix-done` manually (or just file a fresh ticket, as
+this was tested throughout).
+
 ## Architecture: centralized in V1X, not copied into every target repo
 
 The rule calls **`V1X`'s** `dispatches` endpoint, not the target repo's.
@@ -37,8 +49,10 @@ can't see them — deferred on purpose for now.
 
 **Condition** (JQL):
 ```
-project = VD AND issuetype = "Security Bug" AND labels = "sec-ai-fix"
+project = VD AND issuetype = "Security Bug" AND labels = "sec-ai-fix" AND labels NOT IN ("sec-ai-fix-done")
 ```
+(`NOT IN`, not `!=` — the latter can behave oddly on multi-value fields
+like `labels` in JQL.)
 
 **Action**: *Send web request*
 - URL: `https://api.github.com/repos/Andrelleite/V1X/dispatches`

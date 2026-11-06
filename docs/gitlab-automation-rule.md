@@ -63,7 +63,12 @@ Edit the same "AI Security Fix Trigger" rule (or make a new one) —
   (e.g. `VD-5`) without any special function needed, because an issue key
   never contains characters that need escaping either way.
 
-Save, confirm the rule is **On**.
+Save, confirm the rule is **On**. The rule's **Condition** (JQL) is
+unchanged from `docs/jira-automation-rule.md` — only this action's
+URL/headers/body changed when moving from GitHub to GitLab — including
+the `labels NOT IN ("sec-ai-fix-done")` clause that keeps a successful
+run from re-firing on every later edit to the same ticket (see that doc
+for why).
 
 ## Testing
 

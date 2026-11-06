@@ -161,3 +161,22 @@ jobs:
           gh pr create \
             --title "[$ISSUE_KEY] AI Automated Fix" \
             --body-file ../mr_description.md
+
+      - name: Mark the Jira ticket done (idempotency)
+        working-directory: target
+        env:
+          JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
+          JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
+        run: |
+          # Only runs after a real PR has been opened, so the "Work item
+          # updated" trigger firing again on a later unrelated edit
+          # doesn't re-run the whole pipeline for nothing — see
+          # docs/jira-automation-rule.md's JQL, which excludes labels
+          # containing sec-ai-fix-done. A failure here doesn't fail the
+          # job: the PR already succeeded, which is the actual deliverable.
+          ISSUE_KEY=$(python3 -c "import json;print(json.load(open('../jira_payload.json'))['issue_key'])")
+          curl -sf -X PUT -u "$JIRA_EMAIL:$JIRA_API_TOKEN" \
+            -H "Content-Type: application/json" \
+            -d '{"update":{"labels":[{"add":"sec-ai-fix-done"}]}}' \
+            "https://vixai.atlassian.net/rest/api/2/issue/${ISSUE_KEY}" \
+            || echo "warning: failed to add sec-ai-fix-done label to ${ISSUE_KEY}"

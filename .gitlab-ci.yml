@@ -98,3 +98,16 @@ ai_fix:
         --data-urlencode "title=[${ISSUE_KEY}] AI Automated Fix" \
         --data-urlencode "description@../mr_description.md" \
         "https://gitlab.com/api/v4/projects/${PROJECT_PATH_ENCODED}/merge_requests"
+    - |
+      # Idempotency: mark the ticket done ONLY once a real MR has been
+      # opened, so the "Work item updated" trigger firing again on any
+      # later edit (status change, comment, etc.) doesn't re-run the
+      # whole pipeline for nothing -- see docs/jira-automation-rule.md's
+      # JQL, which excludes labels containing sec-ai-fix-done. A failure
+      # here doesn't fail the job: the MR already succeeded, which is the
+      # actual deliverable.
+      curl -sf -X PUT -u "$JIRA_EMAIL:$JIRA_API_TOKEN" \
+        -H "Content-Type: application/json" \
+        -d '{"update":{"labels":[{"add":"sec-ai-fix-done"}]}}' \
+        "https://vixai.atlassian.net/rest/api/2/issue/${ISSUE_KEY}" \
+        || echo "warning: failed to add sec-ai-fix-done label to ${ISSUE_KEY}"
