@@ -14,6 +14,11 @@ name: AI AppSec Fix
 # NOT included yet: the CodeRabbit review-reply loop. That needs something
 # listening on the TARGET repo (since PR review comments happen there, and
 # GitHub Actions triggers are repo-scoped) — deferred on purpose for now.
+#
+# The webhook body only carries the issue key + target repo; summary and
+# description are fetched live from the Jira REST API below (see
+# docs/jira-automation-rule.md for why — short version: Jira Automation's
+# JSON body editor chokes on free text containing quotes/newlines).
 on:
   repository_dispatch:
     types: [trigger_ai_fix]
@@ -21,10 +26,6 @@ on:
     inputs:
       issue_key:
         description: "Jira issue key, e.g. VD-1"
-        required: true
-      summary:
-        required: true
-      description:
         required: true
       repo:
         description: "Target repo to fix, as owner/name"
@@ -49,23 +50,32 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Build Jira payload file
-        # Jira-sourced fields are untrusted input: pass them through env vars,
-        # never interpolate ${{ }} directly into the script body — that's a
-        # script-injection vector (a crafted summary/description could break
-        # out of the string and run arbitrary shell/python).
+      - name: Fetch ticket details from Jira and build payload file
+        # The webhook body only ever carries the issue key + target repo —
+        # both always safe to embed in Jira's smart-value JSON (an issue
+        # key like "VD-3" has no characters that need escaping). Free text
+        # (summary/description) is fetched here via the Jira REST API
+        # instead of being passed through the webhook body, which sidesteps
+        # Jira Automation's JSON-escaping quirks for arbitrary text entirely
+        # and always reads the ticket's current text, not a stale snapshot
+        # from whenever the webhook fired.
         env:
           ISSUE_KEY: ${{ github.event.client_payload.issue_key || inputs.issue_key }}
-          SUMMARY: ${{ github.event.client_payload.summary || inputs.summary }}
-          DESCRIPTION: ${{ github.event.client_payload.description || inputs.description }}
           TARGET_REPO: ${{ github.event.client_payload.repo || inputs.repo }}
+          JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
+          JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
         run: |
+          curl -sf -u "$JIRA_EMAIL:$JIRA_API_TOKEN" \
+            "https://vixai.atlassian.net/rest/api/2/issue/$ISSUE_KEY?fields=summary,description" \
+            -o jira_issue.json
           python3 - <<'PY'
           import json, os
+          issue = json.load(open("jira_issue.json"))
+          fields = issue.get("fields", {})
           payload = {
               "issue_key": os.environ["ISSUE_KEY"],
-              "summary": os.environ["SUMMARY"],
-              "description": os.environ["DESCRIPTION"],
+              "summary": fields.get("summary") or "",
+              "description": fields.get("description") or "",
               "labels": ["sec-ai-fix"],
               "repo": os.environ["TARGET_REPO"],
           }

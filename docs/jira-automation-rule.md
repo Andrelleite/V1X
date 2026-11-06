@@ -55,29 +55,46 @@ project = VD AND issuetype = "Security Bug" AND labels = "sec-ai-fix"
     "event_type": "trigger_ai_fix",
     "client_payload": {
       "issue_key": "{{issue.key}}",
-      "summary": "{{issue.summary}}",
-      "description": "{{issue.description}}",
       "repo": "Andrelleite/juice-shop"
     }
   }
   ```
-  The `repo` field is hardcoded in the rule's static body for now (one
-  rule = one target repo). If you want tickets to target different repos,
-  either make one rule per target repo, or add a custom Jira field/label
-  for the target repo and reference it here instead of a literal string.
+  **Deliberately minimal — only the issue key and target repo.** Earlier
+  drafts tried to pass `summary`/`description` through this body too, but
+  Jira Automation's JSON body editor validates the raw template text
+  *before* any smart-value substitution happens, so free text containing a
+  `"` or a newline breaks it outright (`Unable to parse fields due to
+  invalid JSON`), and even the `.asJsonString` escaping function didn't get
+  past that static check in practice. An issue key like `VD-3` never needs
+  escaping, so the workaround is to not put free text in the webhook body
+  at all: `.github/workflows/ai-fix.yml` fetches the summary/description
+  itself via the Jira REST API using this key (see the secrets below). This
+  also means the fix always runs against the ticket's *current* text, not
+  a stale snapshot from whenever the webhook fired. The `repo` field is
+  still hardcoded in the rule's static body (one rule = one target repo);
+  for multiple target repos, either make one rule per repo or add a custom
+  Jira field for it.
 
 This matches `.github/workflows/ai-fix.yml`'s `repository_dispatch`
 trigger and the `VulnTicket.from_jira_payload` shape in
 `orchestrator/models.py`.
 
-## Secret this needs in V1X (not the target repo)
+## Secrets this needs in V1X (not the target repo)
 
-`TARGET_REPO_TOKEN` — the same classic PAT used in the rule's
-`Authorization` header above, added as a GitHub Actions secret on `V1X`
-(`https://github.com/Andrelleite/V1X/settings/secrets/actions`). This is
-what lets the workflow check out *and* push to the target repo (`juice-shop`
-today). `GEMINI_API_KEY` and `CLAUDE_CODE_OAUTH_CREDS` also live on `V1X`,
-same as before — nothing needs adding to the target repo at all.
+All added at `https://github.com/Andrelleite/V1X/settings/secrets/actions`
+— nothing needs adding to the target repo at all.
+
+- `TARGET_REPO_TOKEN` — the same classic PAT used in the rule's
+  `Authorization` header above. Lets the workflow check out *and* push to
+  the target repo (`juice-shop` today).
+- `JIRA_EMAIL` — the Atlassian account email used to authenticate the
+  REST API call that fetches summary/description (e.g.
+  `black4linka@gmail.com`).
+- `JIRA_API_TOKEN` — an Atlassian API token (**not** the same thing as a
+  GitHub PAT). Create one at
+  `https://id.atlassian.com/manage-profile/security/api-tokens` →
+  **Create API token** → name it, copy it immediately.
+- `GEMINI_API_KEY` and `CLAUDE_CODE_OAUTH_CREDS` — same as before.
 
 ## Second rule — status sync (optional, add once the first rule works)
 
