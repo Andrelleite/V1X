@@ -30,8 +30,28 @@ _TIMEOUT_SECONDS = 10
 
 # Substring match against a note's author username, case-insensitive.
 # Override via env if CodeRabbit's actual GitLab bot username differs
-# from the default assumption.
+# from the default assumption. NOTE: when CodeRabbit is connected to a
+# project via a personal OAuth account rather than a dedicated bot/
+# service account, every comment it posts shows the CONNECTING HUMAN's
+# own username instead — confirmed on a real MR, where CodeRabbit's
+# findings were all authored as "Andreloras", the project owner, not
+# anything containing "coderabbit". This hint alone is not reliable
+# there; see CODERABBIT_CONTENT_MARKERS below for the fallback that
+# actually matters in that setup.
 CODERABBIT_USERNAME_HINT = os.environ.get("CODERABBIT_USERNAME_HINT", "coderabbit")
+
+# Strings specific enough to CodeRabbit's own comment formatting that a
+# genuine human reply essentially never contains them — used as an
+# independent signal alongside the username hint (either matching is
+# enough), since the username alone silently misses every finding when
+# CodeRabbit posts as its connecting human account (see above).
+CODERABBIT_CONTENT_MARKERS = (
+    "Prompt for AI Agents",
+    "Supported by static analysis",
+    "Analysis chain",
+    "Committable suggestion",
+    "Summary by CodeRabbit",
+)
 
 
 @dataclass(frozen=True)
@@ -43,6 +63,12 @@ class OpenThread:
 
 def is_coderabbit_author(username: str) -> bool:
     return CODERABBIT_USERNAME_HINT.lower() in (username or "").lower()
+
+
+def is_coderabbit_note(username: str, body: str) -> bool:
+    if is_coderabbit_author(username):
+        return True
+    return any(marker in (body or "") for marker in CODERABBIT_CONTENT_MARKERS)
 
 
 def _get_json(url: str, headers: dict[str, str]):
@@ -89,7 +115,7 @@ def list_unresolved_coderabbit_threads(
         if last.get("resolvable") is False or last.get("resolved"):
             continue
         author = (last.get("author") or {}).get("username", "")
-        if not is_coderabbit_author(author):
+        if not is_coderabbit_note(author, last.get("body", "")):
             continue
         position = last.get("position") or {}
         threads.append(OpenThread(

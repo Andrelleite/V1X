@@ -4,6 +4,7 @@ from unittest.mock import patch
 from orchestrator.aggregation import OpenFixMR
 from orchestrator.gitlab_review import (
     is_coderabbit_author,
+    is_coderabbit_note,
     list_all_unresolved_threads,
     list_unresolved_coderabbit_threads,
     reply_and_resolve,
@@ -37,6 +38,29 @@ def test_is_coderabbit_author_matches_case_insensitively():
     assert not is_coderabbit_author("")
 
 
+def test_is_coderabbit_note_matches_by_username():
+    assert is_coderabbit_note("coderabbitai", "anything at all")
+
+
+def test_is_coderabbit_note_matches_by_content_when_posted_as_a_human_account():
+    # Real case from a live MR: CodeRabbit connected via personal OAuth
+    # posts every finding under the connecting human's own username, so
+    # the username check alone misses it -- content markers are what
+    # actually identify it.
+    body = (
+        "\U0001F512 Security & Privacy | \U0001F6E1️ Detected with Advanced Tier | "
+        "\U0001F7E0 Major | ⚡ Quick win\n\n"
+        "\U0001F9E9 Analysis chain\nSSRF\n\n"
+        "\U0001F916 Prompt for AI Agents\nFix the SSRF in profileImageUrlUpload.js"
+    )
+    assert is_coderabbit_note("Andreloras", body)
+
+
+def test_is_coderabbit_note_false_for_genuine_human_reply():
+    assert not is_coderabbit_note("Andreloras", "Looks good, thanks for the quick fix!")
+    assert not is_coderabbit_note("", "")
+
+
 def test_list_unresolved_coderabbit_threads_filters_resolved_and_non_coderabbit():
     discussions = [
         _discussion(1, "coderabbitai", "Please validate this input.", resolved=False),
@@ -52,6 +76,23 @@ def test_list_unresolved_coderabbit_threads_filters_resolved_and_non_coderabbit(
     assert threads[0].discussion_id == "disc-1"
     assert threads[0].comment.body == "Please validate this input."
     assert threads[0].mr_iid == 9
+
+
+def test_list_unresolved_coderabbit_threads_catches_findings_posted_as_the_connecting_human():
+    discussions = [
+        _discussion(
+            1, "Andreloras",
+            "SSRF\n\n\U0001F916 Prompt for AI Agents\nBlock private IP ranges.",
+            resolved=False,
+        ),
+        _discussion(2, "Andreloras", "A genuine human reply, not CodeRabbit.", resolved=False),
+    ]
+    with _mock_get_json(discussions):
+        threads = list_unresolved_coderabbit_threads(
+            "https://gitlab.com/api/v4", "group/repo", "tok", mr_iid=10
+        )
+    assert len(threads) == 1
+    assert threads[0].discussion_id == "disc-1"
 
 
 def test_list_unresolved_coderabbit_threads_extracts_file_position():
