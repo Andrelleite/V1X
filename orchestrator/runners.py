@@ -18,27 +18,34 @@ import os
 import shutil
 import subprocess
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Callable
+
+# Linux (GitHub Actions runners) stores the Claude Code subscription OAuth
+# session as a JSON file at this path — restored from the
+# CLAUDE_CODE_OAUTH_CREDS secret by the workflow before this ever runs. On
+# macOS the equivalent lives in the system Keychain instead, which is
+# irrelevant here since the pipeline only ever runs this check on Linux.
+CLAUDE_CREDENTIALS_FILE = Path.home() / ".claude" / ".credentials.json"
 
 
 @dataclass(frozen=True)
 class Runner:
     name: str
     binary: str
-    api_key_env: str
     build_args: Callable[[str], list[str]]
+    is_configured: Callable[[], bool]
+    config_hint: str
 
     def available(self) -> bool:
-        return shutil.which(self.binary) is not None and bool(
-            os.environ.get(self.api_key_env)
-        )
+        return shutil.which(self.binary) is not None and self.is_configured()
 
     def unavailable_reason(self) -> str:
         missing = []
         if shutil.which(self.binary) is None:
             missing.append(f"'{self.binary}' binary not on PATH")
-        if not os.environ.get(self.api_key_env):
-            missing.append(f"{self.api_key_env} not set")
+        if not self.is_configured():
+            missing.append(self.config_hint)
         return ", ".join(missing) or "available"
 
 
@@ -51,8 +58,28 @@ def _claude_args(instruction: str, binary: str = "claude") -> list[str]:
     return [binary, "-p", instruction, "--permission-mode", "acceptEdits"]
 
 
-GEMINI = Runner("gemini", "gemini", "GEMINI_API_KEY", _gemini_args)
-CLAUDE = Runner("claude", "claude", "ANTHROPIC_API_KEY", _claude_args)
+def _gemini_configured() -> bool:
+    return bool(os.environ.get("GEMINI_API_KEY"))
+
+
+def _claude_configured() -> bool:
+    # Either a billed API key, OR a restored subscription (Pro/Max) OAuth
+    # session file — see CLAUDE_CODE_OAUTH_CREDS in the workflows.
+    return bool(os.environ.get("ANTHROPIC_API_KEY")) or CLAUDE_CREDENTIALS_FILE.exists()
+
+
+GEMINI = Runner(
+    "gemini", "gemini", _gemini_args, _gemini_configured, "GEMINI_API_KEY not set"
+)
+CLAUDE = Runner(
+    "claude",
+    "claude",
+    _claude_args,
+    _claude_configured,
+    "ANTHROPIC_API_KEY not set and no restored subscription session at "
+    f"{CLAUDE_CREDENTIALS_FILE} (run `claude login` locally, or restore "
+    "CLAUDE_CODE_OAUTH_CREDS in CI)",
+)
 
 DEFAULT_PRIORITY: tuple[Runner, ...] = (GEMINI, CLAUDE)
 

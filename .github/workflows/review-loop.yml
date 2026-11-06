@@ -52,6 +52,15 @@ jobs:
           npm install -g @google/gemini-cli
           npm install -g @anthropic-ai/claude-code
 
+      - name: Restore Claude Code subscription session (optional fallback auth)
+        if: ${{ secrets.CLAUDE_CODE_OAUTH_CREDS != '' }}
+        env:
+          CLAUDE_CODE_OAUTH_CREDS: ${{ secrets.CLAUDE_CODE_OAUTH_CREDS }}
+        run: |
+          mkdir -p "$HOME/.claude"
+          printf '%s' "$CLAUDE_CODE_OAUTH_CREDS" > "$HOME/.claude/.credentials.json"
+          chmod 600 "$HOME/.claude/.credentials.json"
+
       - name: Run the reviewer-response step
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}

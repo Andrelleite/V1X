@@ -59,6 +59,19 @@ jobs:
           npm install -g @google/gemini-cli
           npm install -g @anthropic-ai/claude-code
 
+      - name: Restore Claude Code subscription session (optional fallback auth)
+        # Only used if ANTHROPIC_API_KEY isn't set — lets the Claude
+        # fallback run on a Pro/Max subscription instead of billed API
+        # credits. See docs/claude-subscription-fallback.md for how this
+        # secret is produced and its risk tradeoffs before relying on it.
+        if: ${{ secrets.CLAUDE_CODE_OAUTH_CREDS != '' }}
+        env:
+          CLAUDE_CODE_OAUTH_CREDS: ${{ secrets.CLAUDE_CODE_OAUTH_CREDS }}
+        run: |
+          mkdir -p "$HOME/.claude"
+          printf '%s' "$CLAUDE_CODE_OAUTH_CREDS" > "$HOME/.claude/.credentials.json"
+          chmod 600 "$HOME/.claude/.credentials.json"
+
       - name: Create branch
         run: |
           git checkout -b "fix/ai-$(python3 -c "import json;print(json.load(open('jira_payload.json'))['issue_key'])")"

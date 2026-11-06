@@ -1,4 +1,5 @@
 from orchestrator.runners import GEMINI, CLAUDE, Runner, select_runner
+import orchestrator.runners as runners_mod
 
 
 def _fake_available(answer: bool):
@@ -41,3 +42,25 @@ def test_claude_command_uses_print_flag():
     assert cmd[0] == "claude"
     assert "-p" in cmd
     assert "do the thing" in cmd
+
+
+def test_claude_configured_via_api_key_env(monkeypatch, tmp_path):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-fake")
+    monkeypatch.setattr(runners_mod, "CLAUDE_CREDENTIALS_FILE", tmp_path / "nope.json")
+    assert CLAUDE.is_configured()
+
+
+def test_claude_configured_via_restored_subscription_file(monkeypatch, tmp_path):
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    fake_creds = tmp_path / ".credentials.json"
+    fake_creds.write_text('{"claudeAiOauth": {}}')
+    monkeypatch.setattr(runners_mod, "CLAUDE_CREDENTIALS_FILE", fake_creds)
+    assert runners_mod._claude_configured()
+
+
+def test_claude_not_configured_when_neither_present(monkeypatch, tmp_path):
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.setattr(
+        runners_mod, "CLAUDE_CREDENTIALS_FILE", tmp_path / "nope.json"
+    )
+    assert not runners_mod._claude_configured()
