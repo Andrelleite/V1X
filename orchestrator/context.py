@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import base64
 import json
+import re
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -22,7 +23,18 @@ from dataclasses import dataclass
 
 MAX_ITEMS_PER_SOURCE = 5
 MAX_EXCERPT_CHARS = 300
+MIN_RELEVANCE_SCORE = 2  # shared significant words required to keep a result
 _TIMEOUT_SECONDS = 10
+
+_CWE_RE = re.compile(r"CWE-\d+", re.IGNORECASE)
+_FILE_PATH_RE = re.compile(
+    r"\b[\w./-]+\.(?:ts|tsx|js|jsx|py|go|java|rb|php|c|cpp|h|cs|rs|kt|swift)\b"
+)
+_STOPWORDS = frozenset({
+    "the", "a", "an", "and", "or", "in", "on", "at", "to", "of", "for",
+    "is", "this", "that", "with", "from", "via", "not", "be", "as", "by",
+    "it", "its", "was", "were", "are", "can", "could", "would", "will",
+})
 
 
 @dataclass(frozen=True)
@@ -31,6 +43,43 @@ class ContextItem:
     title: str
     url: str = ""
     excerpt: str = ""
+
+
+def extract_search_terms(ticket_text: str, fallback: str) -> list[str]:
+    """Most-specific-first search terms for finding genuinely similar past
+    tickets/commits. A CWE id or an exact file path is a much stronger
+    "same problem" signal than a broad OWASP category name alone — two
+    injection tickets in unrelated files aren't really a similar problem,
+    but two tickets both citing CWE-89, or both touching the same file,
+    almost certainly are. Callers try these in order and stop at the
+    first one that returns any result."""
+    terms: list[str] = []
+    cwe = _CWE_RE.search(ticket_text)
+    if cwe:
+        terms.append(cwe.group(0).upper())
+    path = _FILE_PATH_RE.search(ticket_text)
+    if path:
+        terms.append(path.group(0))
+    if fallback and fallback not in terms:
+        terms.append(fallback)
+    return terms
+
+
+def _significant_words(text: str) -> set[str]:
+    return {
+        w for w in re.findall(r"[a-zA-Z0-9_]{3,}", text.lower())
+        if w not in _STOPWORDS
+    }
+
+
+def _relevance_score(ticket_text: str, item: ContextItem) -> int:
+    """Shared significant words between the current ticket and a
+    candidate result — used to drop results that only matched a fallback
+    search term in passing, not because they're actually a similar
+    problem (e.g. two unrelated tickets that both happen to say
+    "Injection" somewhere)."""
+    candidate_text = f"{item.title} {item.excerpt}"
+    return len(_significant_words(ticket_text) & _significant_words(candidate_text))
 
 
 def _get_json(url: str, headers: dict[str, str]) -> dict | list | None:
@@ -132,7 +181,8 @@ def search_gitlab_commits(
 
 
 def gather_all(
-    keyword: str,
+    ticket_text: str,
+    fallback_keyword: str,
     exclude_key: str,
     jira_site_url: str,
     jira_email: str,
@@ -145,21 +195,56 @@ def gather_all(
     drop straight into the Fixer's instruction. Any credential passed as
     an empty string skips that source entirely (so this works the same
     whether called locally with nothing configured, or in CI with all
-    three wired up) rather than making a doomed request."""
-    items: list[ContextItem] = []
+    three wired up) rather than making a doomed request.
+
+    For each source, search terms are tried most-specific-first (CWE id,
+    then the ticket's own file path, then the broad OWASP category name
+    as a last resort — see extract_search_terms), stopping at the first
+    term that returns anything. Results are then relevance-scored against
+    the ticket's own text: anything with a real excerpt to score (Jira
+    descriptions, GitLab commit messages) that doesn't share enough
+    vocabulary with the ticket is dropped, so a coincidental fallback-term
+    match doesn't masquerade as a genuinely similar problem. Confluence
+    results (title only, no body fetched) aren't scored — there's not
+    enough text to judge, so they pass through on the search match alone.
+    """
+    terms = extract_search_terms(ticket_text, fallback_keyword)
     sources_tried: list[str] = []
+    items: list[ContextItem] = []
+
+    def _first_nonempty(search_one_term) -> list[ContextItem]:
+        for term in terms:
+            result = search_one_term(term)
+            if result:
+                return result
+        return []
 
     if jira_email and jira_token:
         sources_tried.append("jira")
-        items += search_jira(jira_site_url, jira_email, jira_token, keyword, exclude_key)
+        items += _first_nonempty(
+            lambda term: search_jira(jira_site_url, jira_email, jira_token, term, exclude_key)
+        )
     if jira_email and jira_token:  # Confluence Cloud reuses the same Atlassian creds
         sources_tried.append("confluence")
-        items += search_confluence(jira_site_url, jira_email, jira_token, keyword)
+        items += _first_nonempty(
+            lambda term: search_confluence(jira_site_url, jira_email, jira_token, term)
+        )
     if gitlab_token and gitlab_project_path:
         sources_tried.append("gitlab")
-        items += search_gitlab_commits(gitlab_api_base, gitlab_project_path, gitlab_token, keyword)
+        items += _first_nonempty(
+            lambda term: search_gitlab_commits(
+                gitlab_api_base, gitlab_project_path, gitlab_token, term
+            )
+        )
 
-    return render_context_block(items, tuple(sources_tried))
+    scored = [(item, _relevance_score(ticket_text, item)) for item in items]
+    relevant = [
+        item for item, score in scored
+        if not item.excerpt or score >= MIN_RELEVANCE_SCORE
+    ]
+    relevant.sort(key=lambda item: _relevance_score(ticket_text, item), reverse=True)
+
+    return render_context_block(relevant, tuple(sources_tried))
 
 
 def render_context_block(items: list[ContextItem], sources_tried: tuple[str, ...]) -> str:

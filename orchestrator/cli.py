@@ -58,9 +58,11 @@ def _report_selection(instruction: str) -> None:
 
 def _gather_context(ticket: VulnTicket) -> str:
     keyword = primary_category_keyword(ticket.text)
-    print(f"[context] searching Jira/Confluence/GitLab for: {keyword!r}")
+    terms = context_module.extract_search_terms(ticket.text, keyword)
+    print(f"[context] search terms, most specific first: {terms!r}")
     block = context_module.gather_all(
-        keyword=keyword,
+        ticket_text=ticket.text,
+        fallback_keyword=keyword,
         exclude_key=ticket.key,
         jira_site_url=JIRA_SITE_URL,
         jira_email=os.environ.get("JIRA_EMAIL", ""),
@@ -76,15 +78,22 @@ def _gather_context(ticket: VulnTicket) -> str:
 def cmd_fix(args: argparse.Namespace) -> int:
     payload = _load_json(args.payload)
     ticket = VulnTicket.from_jira_payload(payload)
-    related_context = _gather_context(ticket)
-    instruction = build_fix_instruction(ticket, related_context=related_context)
 
     print(f"[fix] ticket={ticket.key} repo={ticket.repo}")
-    _report_selection(instruction)
 
     if not args.execute:
-        print("[fix] dry run — pass --execute to actually invoke a backend")
+        # Dry run stays side-effect-free: context gathering makes real
+        # network calls (Jira/Confluence/GitLab), so it's skipped here and
+        # only happens once we're actually about to invoke a backend.
+        instruction = build_fix_instruction(ticket)
+        _report_selection(instruction)
+        print("[fix] dry run — pass --execute to actually invoke a backend "
+              "(context search is skipped in dry runs too)")
         return 0
+
+    related_context = _gather_context(ticket)
+    instruction = build_fix_instruction(ticket, related_context=related_context)
+    _report_selection(instruction)
 
     runner, result = run_fix(ticket, repo_dir=args.repo_dir)
     print(f"[fix] ran with backend={runner.name}")
