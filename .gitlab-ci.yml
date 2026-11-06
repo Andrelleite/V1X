@@ -1,0 +1,90 @@
+# You can override the included template(s) by including variable overrides
+# SAST customization: https://docs.gitlab.com/user/application_security/sast/#available-cicd-variables
+# Secret Detection customization: https://docs.gitlab.com/user/application_security/secret_detection/pipeline/configure/
+stages:
+  - test
+  - secret-detection
+  - ai-fix
+
+include:
+  - template: Security/SAST.gitlab-ci.yml
+  - template: Security/Secret-Detection.gitlab-ci.yml
+
+sast:
+  stage: test
+
+secret_detection:
+  stage: secret-detection
+
+# Fired only by the Jira Automation rule calling GitLab's Pipeline Trigger
+# API (docs/jira-automation-rule.md) — never by an ordinary push to this
+# repo. V1X is the "brain" (orchestrator + CLAUDE.md + security/knowledge)
+# and is only ever read here; the job clones the TARGET repo named by the
+# Jira ticket (via the ISSUE_KEY/TARGET_REPO pipeline variables) and
+# patches/pushes/opens an MR there instead. See docs/jira-automation-rule.md
+# for why summary/description are fetched from Jira's REST API rather than
+# passed as pipeline variables (GitLab's trigger API is form-encoded, not
+# JSON, so it doesn't have the escaping problem GitHub's did — but keeping
+# the trigger payload minimal is still simpler and always current).
+#
+# NOT included yet: the CodeRabbit-equivalent review-reply loop — deferred
+# on purpose, same as the GitHub version of this pipeline.
+ai_fix:
+  stage: ai-fix
+  image: node:20-bookworm
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "trigger"'
+  before_script:
+    - apt-get update -qq && apt-get install -y -qq python3 curl git >/dev/null
+    - npm install -g @google/gemini-cli @anthropic-ai/claude-code >/dev/null
+  script:
+    - |
+      curl -sf -u "$JIRA_EMAIL:$JIRA_API_TOKEN" \
+        "https://vixai.atlassian.net/rest/api/2/issue/$ISSUE_KEY?fields=summary,description" \
+        -o jira_issue.json
+      python3 - <<'PY'
+      import json, os
+      issue = json.load(open("jira_issue.json"))
+      fields = issue.get("fields", {})
+      payload = {
+          "issue_key": os.environ["ISSUE_KEY"],
+          "summary": fields.get("summary") or "",
+          "description": fields.get("description") or "",
+          "labels": ["sec-ai-fix"],
+          "repo": os.environ["TARGET_REPO"],
+      }
+      with open("jira_payload.json", "w") as f:
+          json.dump(payload, f)
+      PY
+    - git clone "https://oauth2:${TARGET_REPO_TOKEN}@gitlab.com/${TARGET_REPO}.git" target
+    - |
+      PROJECT_PATH_ENCODED=$(python3 -c "import urllib.parse,os;print(urllib.parse.quote(os.environ['TARGET_REPO'], safe=''))")
+      DEFAULT_BRANCH=$(curl -sf -H "PRIVATE-TOKEN: ${TARGET_REPO_TOKEN}" "https://gitlab.com/api/v4/projects/${PROJECT_PATH_ENCODED}" | python3 -c "import json,sys;print(json.load(sys.stdin)['default_branch'])")
+      echo "DEFAULT_BRANCH=${DEFAULT_BRANCH}" >> build.env
+    - source build.env
+    - cp CLAUDE.md target/
+    - cp GEMINI.md target/
+    - cp -r security target/
+    - printf 'CLAUDE.md\nGEMINI.md\nsecurity/\n' >> target/.git/info/exclude
+    - |
+      if [ -n "$CLAUDE_CODE_OAUTH_CREDS" ]; then
+        mkdir -p "$HOME/.claude"
+        printf '%s' "$CLAUDE_CODE_OAUTH_CREDS" > "$HOME/.claude/.credentials.json"
+        chmod 600 "$HOME/.claude/.credentials.json"
+      fi
+    - cd target
+    - git config user.name "AI AppSec Bot"
+    - git config user.email "ai-appsec-bot@users.noreply.gitlab.com"
+    - git checkout -b "fix/ai-${ISSUE_KEY}"
+    - cd ..
+    - python3 -m orchestrator.cli fix --payload jira_payload.json --repo-dir target --execute
+    - cd target
+    - git push "https://oauth2:${TARGET_REPO_TOKEN}@gitlab.com/${TARGET_REPO}.git" "HEAD:fix/ai-${ISSUE_KEY}"
+    - |
+      curl -sf -X POST \
+        -H "PRIVATE-TOKEN: ${TARGET_REPO_TOKEN}" \
+        --data-urlencode "source_branch=fix/ai-${ISSUE_KEY}" \
+        --data-urlencode "target_branch=${DEFAULT_BRANCH}" \
+        --data-urlencode "title=[${ISSUE_KEY}] AI Automated Fix" \
+        --data-urlencode "description=Automated remediation for Jira ticket ${ISSUE_KEY}. See CLAUDE.md (from the V1X project) for the process that produced this MR." \
+        "https://gitlab.com/api/v4/projects/${PROJECT_PATH_ENCODED}/merge_requests"
