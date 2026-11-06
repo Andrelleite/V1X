@@ -23,9 +23,9 @@ FIXED_CODE_START = "===FIXED_CODE==="
 FIXED_CODE_END = "===END_FIXED_CODE==="
 
 _FIELD_RE = re.compile(r"^([A-Z_]+):\s*(.*)$")
-_VALID_BLAST_RADIUS = ("LOW", "MEDIUM", "HIGH")
+_VALID_RISK_LEVEL = ("LOW", "MEDIUM", "HIGH")  # shared by BLAST_RADIUS and EXPLOITABILITY
 
-_BLAST_BADGE = {"LOW": "🟢 Low", "MEDIUM": "🟡 Medium", "HIGH": "🔴 High"}
+_RISK_BADGE = {"LOW": "🟢 Low", "MEDIUM": "🟡 Medium", "HIGH": "🔴 High"}  # blast radius + exploitability
 _SEVERITY_BADGE = {
     "HIGHEST": "🔴 Highest",
     "HIGH": "🟠 High",
@@ -40,10 +40,12 @@ class FixReport:
     found: bool
     confidence: int | None = None
     blast_radius: str | None = None  # "LOW" | "MEDIUM" | "HIGH"
+    exploitability: str | None = None  # "LOW" | "MEDIUM" | "HIGH"
     affected_files: str = ""
     code_language: str = ""
     summary: str = ""
     blast_radius_details: str = ""
+    exploitability_details: str = ""
     tests: str = ""
     architecture_diagram: str = ""  # raw Mermaid source, no code fence
     vulnerable_code: str = ""  # raw snippet, no code fence
@@ -117,8 +119,12 @@ def parse_fix_report(text: str) -> FixReport:
         confidence = max(0, min(100, confidence))
 
     blast_radius = get("BLAST_RADIUS").upper().strip() or None
-    if blast_radius not in _VALID_BLAST_RADIUS:
+    if blast_radius not in _VALID_RISK_LEVEL:
         blast_radius = None
+
+    exploitability = get("EXPLOITABILITY").upper().strip() or None
+    if exploitability not in _VALID_RISK_LEVEL:
+        exploitability = None
 
     language = re.sub(r"[^a-zA-Z0-9_+-]", "", get("CODE_LANGUAGE")) or "text"
 
@@ -126,10 +132,12 @@ def parse_fix_report(text: str) -> FixReport:
         found=True,
         confidence=confidence,
         blast_radius=blast_radius,
+        exploitability=exploitability,
         affected_files=get("AFFECTED_FILES"),
         code_language=language,
         summary=get("SUMMARY"),
         blast_radius_details=get("BLAST_RADIUS_DETAILS"),
+        exploitability_details=get("EXPLOITABILITY_DETAILS"),
         tests=get("TESTS"),
         architecture_diagram=(diagram or "").strip(),
         vulnerable_code=(vulnerable_code or "").strip("\n"),
@@ -220,13 +228,15 @@ def render_mr_description(
             "before relying on it.\n"
         )
 
-    blast_badge = _BLAST_BADGE.get(report.blast_radius or "", "⚪ Unknown")
+    blast_badge = _RISK_BADGE.get(report.blast_radius or "", "⚪ Unknown")
+    exploitability_badge = _RISK_BADGE.get(report.exploitability or "", "⚪ Unknown")
     diagram = report.architecture_diagram or _fallback_diagram(
         ticket.key, report.affected_files
     )
     affected_files = _escape_prose(report.affected_files)
     summary = _escape_prose(report.summary)
     blast_radius_details = _escape_prose(report.blast_radius_details)
+    exploitability_details = _escape_prose(report.exploitability_details)
     tests = _escape_prose(report.tests)
 
     if report.vulnerable_code or report.fixed_code:
@@ -258,6 +268,7 @@ def render_mr_description(
 | **Estimated Cost** | {_cost_line(cost_usd, cost_note)} |
 
 **Confidence:** {_confidence_meter(report.confidence)}
+**Exploitability:** {exploitability_badge}
 **Blast Radius:** {blast_badge}
 
 ---
@@ -269,6 +280,9 @@ def render_mr_description(
 ```mermaid
 {diagram}
 ```
+
+### Exploitability assessment
+{exploitability_details or "_not provided by the agent_"}
 
 ### Blast radius assessment
 {blast_radius_details or "_not provided by the agent_"}

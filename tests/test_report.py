@@ -15,6 +15,7 @@ Some agent chatter before the report.
 ===FIX_REPORT===
 CONFIDENCE: 85
 BLAST_RADIUS: MEDIUM
+EXPLOITABILITY: HIGH
 AFFECTED_FILES: routes/login.ts, test/api/loginApiSpec.ts
 CODE_LANGUAGE: typescript
 SUMMARY: Parameterized the login query in routes/login.ts:34 using named
@@ -22,6 +23,9 @@ replacements instead of raw string interpolation.
 BLAST_RADIUS_DETAILS: Only called by the /rest/user/login handler.
 Legitimate logins are unaffected; several SQLi-based challenge tests now
 intentionally fail since they tested the vulnerability itself.
+EXPLOITABILITY_DETAILS: Reachable pre-auth at POST /rest/user/login with
+no rate limiting or WAF in front of it — any anonymous attacker can send
+the payload directly.
 TESTS: Updated 5 tests in loginApiSpec.ts; did not run the suite (no
 node_modules in this checkout).
 ===VULNERABLE_CODE===
@@ -46,9 +50,11 @@ def test_parse_fix_report_extracts_all_fields():
     assert report.found
     assert report.confidence == 85
     assert report.blast_radius == "MEDIUM"
+    assert report.exploitability == "HIGH"
     assert report.affected_files == "routes/login.ts, test/api/loginApiSpec.ts"
     assert "Parameterized the login query" in report.summary
     assert "SQLi-based challenge tests" in report.blast_radius_details
+    assert "no rate limiting or WAF" in report.exploitability_details
     assert "did not run the suite" in report.tests
     assert "flowchart TD" in report.architecture_diagram
     assert "Users table" in report.architecture_diagram
@@ -76,6 +82,12 @@ def test_parse_fix_report_rejects_invalid_blast_radius():
     assert report.blast_radius is None
 
 
+def test_parse_fix_report_rejects_invalid_exploitability():
+    text = "===FIX_REPORT===\nCONFIDENCE: 50\nEXPLOITABILITY: WHO_KNOWS\n===END_FIX_REPORT==="
+    report = parse_fix_report(text)
+    assert report.exploitability is None
+
+
 def test_render_mr_description_includes_meter_badge_and_diagram():
     report = parse_fix_report(SAMPLE_OUTPUT)
     description = render_mr_description(
@@ -90,6 +102,9 @@ def test_render_mr_description_includes_meter_badge_and_diagram():
     assert "VD-14" in description
     assert "85%" in description
     assert "🟡 Medium" in description
+    assert "**Exploitability:** 🔴 High" in description
+    assert "### Exploitability assessment" in description
+    assert "no rate limiting or WAF" in description
     assert "claude" in description
     assert "🔴 Highest" in description  # ticket.priority severity badge
     assert "A03 (Injection)" in description
