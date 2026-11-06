@@ -16,6 +16,7 @@ Some agent chatter before the report.
 CONFIDENCE: 85
 BLAST_RADIUS: MEDIUM
 AFFECTED_FILES: routes/login.ts, test/api/loginApiSpec.ts
+CODE_LANGUAGE: typescript
 SUMMARY: Parameterized the login query in routes/login.ts:34 using named
 replacements instead of raw string interpolation.
 BLAST_RADIUS_DETAILS: Only called by the /rest/user/login handler.
@@ -23,6 +24,12 @@ Legitimate logins are unaffected; several SQLi-based challenge tests now
 intentionally fail since they tested the vulnerability itself.
 TESTS: Updated 5 tests in loginApiSpec.ts; did not run the suite (no
 node_modules in this checkout).
+===VULNERABLE_CODE===
+models.sequelize.query(`SELECT * FROM Users WHERE email = '${email}'`)
+===END_VULNERABLE_CODE===
+===FIXED_CODE===
+models.sequelize.query('SELECT * FROM Users WHERE email = :email', { replacements: { email } })
+===END_FIXED_CODE===
 ===ARCHITECTURE_DIAGRAM===
 flowchart TD
   A["routes/login.ts"] -->|parameterized query| B[(Users table)]
@@ -45,6 +52,9 @@ def test_parse_fix_report_extracts_all_fields():
     assert "did not run the suite" in report.tests
     assert "flowchart TD" in report.architecture_diagram
     assert "Users table" in report.architecture_diagram
+    assert report.code_language == "typescript"
+    assert "WHERE email = '${email}'" in report.vulnerable_code
+    assert "replacements: { email }" in report.fixed_code
 
 
 def test_parse_fix_report_missing_block_returns_not_found():
@@ -87,6 +97,35 @@ def test_render_mr_description_includes_meter_badge_and_diagram():
     assert "flowchart TD" in description
     assert "$0.0231" in description
     assert "**Estimated Cost**" in description
+    assert "### Before → After" in description
+    assert "```typescript" in description
+    assert "WHERE email = '${email}'" in description
+    assert "replacements: { email }" in description
+
+
+def test_render_mr_description_omits_code_section_when_agent_provides_none():
+    text = (
+        "===FIX_REPORT===\nCONFIDENCE: 60\nBLAST_RADIUS: LOW\n"
+        "AFFECTED_FILES: routes/search.ts\nSUMMARY: fixed it\n"
+        "BLAST_RADIUS_DETAILS: low risk\nTESTS: added one\n"
+        "===END_FIX_REPORT==="
+    )
+    report = parse_fix_report(text)
+    description = render_mr_description(TICKET, "A03 (Injection)", report)
+    assert "Before → After" not in description
+
+
+def test_code_language_is_sanitized_to_safe_token():
+    text = (
+        '===FIX_REPORT===\nCONFIDENCE: 60\nBLAST_RADIUS: LOW\n'
+        'CODE_LANGUAGE: typescript```\nSUMMARY: fixed it\n'
+        'BLAST_RADIUS_DETAILS: low risk\nTESTS: added one\n'
+        '===VULNERABLE_CODE===\nold code\n===END_VULNERABLE_CODE===\n'
+        '===FIXED_CODE===\nnew code\n===END_FIXED_CODE===\n'
+        '===END_FIX_REPORT==='
+    )
+    report = parse_fix_report(text)
+    assert report.code_language == "typescript"
 
 
 def test_render_mr_description_cost_unavailable_is_labeled_clearly():
