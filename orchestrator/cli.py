@@ -17,6 +17,7 @@ import os
 import sys
 from pathlib import Path
 
+from . import aggregation as aggregation_module
 from . import context as context_module
 from . import cost as cost_module
 from .fixer import run_fix, run_review
@@ -121,6 +122,73 @@ def cmd_fix(args: argparse.Namespace) -> int:
     return result.returncode
 
 
+def cmd_aggregate_check(args: argparse.Namespace) -> int:
+    """Checks whether this ticket is a near-duplicate of an already-open
+    pipeline-created MR (see orchestrator/aggregation.py) and, if so,
+    writes AGGREGATE_MR_IID/AGGREGATE_BRANCH to a shell-sourceable file
+    for the CI script to pick up. Writes nothing (empty file) when there's
+    no match, or when there's no TARGET_REPO_TOKEN/repo to check against
+    — read-only, never fails the job."""
+    payload = _load_json(args.payload)
+    ticket = VulnTicket.from_jira_payload(payload)
+    token = os.environ.get("TARGET_REPO_TOKEN", "")
+
+    if not token or not ticket.repo:
+        print("[aggregate] no TARGET_REPO_TOKEN/repo — skipping aggregation check")
+        Path(args.out).write_text("")
+        return 0
+
+    open_mrs = aggregation_module.list_open_fix_mrs(GITLAB_API_BASE, ticket.repo, token)
+    print(f"[aggregate] found {len(open_mrs)} open pipeline-created MR(s) to compare against")
+    open_mrs = aggregation_module.enrich_with_jira_text(
+        open_mrs, JIRA_SITE_URL,
+        os.environ.get("JIRA_EMAIL", ""), os.environ.get("JIRA_API_TOKEN", ""),
+    )
+
+    match = aggregation_module.find_aggregation_target(ticket.text, ticket.key, open_mrs)
+    if match is None:
+        print("[aggregate] no match above "
+              f"{aggregation_module.SIMILARITY_THRESHOLD_PERCENT:.0f}% similarity — will open a new MR")
+        Path(args.out).write_text("")
+        return 0
+
+    mr, score = match
+    print(f"[aggregate] matched !{mr.iid} ({mr.source_branch}) at {score:.1f}% similarity — aggregating")
+    Path(args.out).write_text(
+        f"AGGREGATE_MR_IID={mr.iid}\n"
+        f"AGGREGATE_BRANCH={mr.source_branch}\n"
+        f"AGGREGATE_SIMILARITY={score:.1f}\n"
+    )
+    return 0
+
+
+def cmd_prepare_mr_update(args: argparse.Namespace) -> int:
+    """Fetches the target MR's current title/description and writes the
+    MERGED versions to files the CI script's curl PUT then uses — keeps
+    the actual mutating API call in the YAML (consistent with how MR
+    creation/push already work) while the text-merging logic stays here,
+    tested."""
+    payload = _load_json(args.payload)
+    ticket = VulnTicket.from_jira_payload(payload)
+    token = os.environ.get("TARGET_REPO_TOKEN", "")
+
+    current = aggregation_module.get_mr(GITLAB_API_BASE, ticket.repo or "", token, args.mr_iid)
+    if current is None:
+        print(f"[aggregate] could not fetch MR !{args.mr_iid} to update")
+        return 1
+
+    new_section = Path(args.mr_description).read_text()
+    merged_title = aggregation_module.build_merged_title(current.get("title", ""), ticket.key)
+    merged_description = aggregation_module.build_merged_description(
+        current.get("description", ""), new_section, ticket.key, args.similarity
+    )
+
+    Path(args.title_out).write_text(merged_title)
+    Path(args.description_out).write_text(merged_description)
+    print(f"[aggregate] prepared merged title/description for MR !{args.mr_iid}: {merged_title!r}")
+    return 0
+
+
 def cmd_review(args: argparse.Namespace) -> int:
     payload = _load_json(args.payload)
     comment = ReviewComment(
@@ -162,6 +230,26 @@ def main(argv: list[str] | None = None) -> int:
     review_p.add_argument("--repo-dir", default=".")
     review_p.add_argument("--execute", action="store_true")
     review_p.set_defaults(func=cmd_review)
+
+    agg_check_p = sub.add_parser(
+        "aggregate-check",
+        help="Check whether this ticket near-duplicates an already-open pipeline MR",
+    )
+    agg_check_p.add_argument("--payload", required=True, help="Path to a JSON payload file")
+    agg_check_p.add_argument("--out", default="aggregate.env")
+    agg_check_p.set_defaults(func=cmd_aggregate_check)
+
+    agg_update_p = sub.add_parser(
+        "prepare-mr-update",
+        help="Compute the merged title/description for an aggregated MR update",
+    )
+    agg_update_p.add_argument("--payload", required=True, help="Path to a JSON payload file")
+    agg_update_p.add_argument("--mr-iid", required=True, type=int)
+    agg_update_p.add_argument("--mr-description", required=True, help="This run's rendered report")
+    agg_update_p.add_argument("--similarity", required=True, type=float)
+    agg_update_p.add_argument("--title-out", default="mr_title.txt")
+    agg_update_p.add_argument("--description-out", default="mr_description_merged.md")
+    agg_update_p.set_defaults(func=cmd_prepare_mr_update)
 
     args = parser.parse_args(argv)
     return args.func(args)

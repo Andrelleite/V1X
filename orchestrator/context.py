@@ -65,7 +65,7 @@ def extract_search_terms(ticket_text: str, fallback: str) -> list[str]:
     return terms
 
 
-def _significant_words(text: str) -> set[str]:
+def significant_words(text: str) -> set[str]:
     return {
         w for w in re.findall(r"[a-zA-Z0-9_]{3,}", text.lower())
         if w not in _STOPWORDS
@@ -79,7 +79,7 @@ def _relevance_score(ticket_text: str, item: ContextItem) -> int:
     problem (e.g. two unrelated tickets that both happen to say
     "Injection" somewhere)."""
     candidate_text = f"{item.title} {item.excerpt}"
-    return len(_significant_words(ticket_text) & _significant_words(candidate_text))
+    return len(significant_words(ticket_text) & significant_words(candidate_text))
 
 
 def _get_json(url: str, headers: dict[str, str]) -> dict | list | None:

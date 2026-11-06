@@ -110,46 +110,116 @@ ai_fix:
       endstep 5
 
     - |
-      step 6 "Create fix branch $FIX_BRANCH in target repo"
-      cd target
-      git config user.name "AI AppSec Bot"
-      git config user.email "ai-appsec-bot@users.noreply.gitlab.com"
-      git checkout -b "${FIX_BRANCH}"
-      cd ..
+      step 6 "Check whether this is a near-duplicate of an already-open fix MR"
+      # orchestrator/aggregation.py: compares this ticket against every
+      # currently-open MR this pipeline itself created, using each
+      # candidate's OWN Jira ticket text (not the MR's rendered
+      # description, which is mostly shared template boilerplate that
+      # would inflate similarity between any two MRs). A match at or
+      # above AGGREGATION_SIMILARITY_THRESHOLD (default 90%) means "same
+      # root cause" -- e.g. a scanner reporting the same finding twice --
+      # not just "related", so this stays conservative by design.
+      python3 -m orchestrator.cli aggregate-check --payload jira_payload.json --out aggregate.env
+      if [ -s aggregate.env ]; then
+        cat aggregate.env >> build.env
+      fi
+      source build.env
+      if [ -n "${AGGREGATE_MR_IID:-}" ]; then
+        echo "  -> aggregating into MR !${AGGREGATE_MR_IID} (${AGGREGATE_BRANCH}) at ${AGGREGATE_SIMILARITY}% similarity"
+      else
+        echo "  -> no match above threshold, will open a new MR"
+      fi
       endstep 6
 
     - |
-      step 7 "Run the Fixer (context search, then Gemini first / Claude fallback)"
-      python3 -m orchestrator.cli fix --payload jira_payload.json --repo-dir target --execute
+      step 7 "Create or reuse the fix branch"
+      cd target
+      git config user.name "AI AppSec Bot"
+      git config user.email "ai-appsec-bot@users.noreply.gitlab.com"
+      if [ -n "${AGGREGATE_BRANCH:-}" ]; then
+        git fetch "https://oauth2:${TARGET_REPO_TOKEN}@gitlab.com/${TARGET_REPO}.git" "${AGGREGATE_BRANCH}"
+        git checkout "${AGGREGATE_BRANCH}"
+      else
+        git checkout -b "${FIX_BRANCH}"
+      fi
+      cd ..
       endstep 7
 
     - |
-      step 8 "Push the fix branch to $TARGET_REPO"
-      cd target
-      git push "https://oauth2:${TARGET_REPO_TOKEN}@gitlab.com/${TARGET_REPO}.git" "HEAD:${FIX_BRANCH}"
-      cd ..
+      step 8 "Run the Fixer (context search, then Gemini first / Claude fallback)"
+      python3 -m orchestrator.cli fix --payload jira_payload.json --repo-dir target --execute
       endstep 8
 
     - |
-      step 9 "Open the MR with the rich report as its description"
-      # mr_description.md was written by orchestrator.cli (report.py) in
-      # step 7, from the agent's ===FIX_REPORT=== block — a rich
-      # description with a confidence meter, blast-radius badge, impacted
-      # architecture diagram, and estimated cost, not bare boilerplate.
+      step 9 "Push the fix (reusing the branch if aggregating, new otherwise)"
+      # If aggregating, another pipeline run could have pushed to the
+      # same branch in the time it took the Fixer to run (step 8 can take
+      # minutes). One retry after rebasing onto whatever landed in the
+      # meantime; if that ALSO fails, fall back to a brand-new branch
+      # rather than let the job just die -- the fix still gets delivered,
+      # just as its own separate MR instead of aggregated.
       cd target
-      curl -sf -X POST \
-        -H "PRIVATE-TOKEN: ${TARGET_REPO_TOKEN}" \
-        --data-urlencode "source_branch=${FIX_BRANCH}" \
-        --data-urlencode "target_branch=${DEFAULT_BRANCH}" \
-        --data-urlencode "title=[${ISSUE_KEY}] AI Automated Fix" \
-        --data-urlencode "description@../mr_description.md" \
-        "https://gitlab.com/api/v4/projects/${PROJECT_PATH_ENCODED}/merge_requests"
+      PUSH_URL="https://oauth2:${TARGET_REPO_TOKEN}@gitlab.com/${TARGET_REPO}.git"
+      if [ -n "${AGGREGATE_BRANCH:-}" ]; then
+        if git push "$PUSH_URL" "HEAD:${AGGREGATE_BRANCH}"; then
+          echo "  -> pushed onto existing branch ${AGGREGATE_BRANCH}"
+        else
+          echo "  -> push rejected (likely a concurrent push) -- retrying after rebase"
+          git fetch "$PUSH_URL" "${AGGREGATE_BRANCH}"
+          REBASE_OK=true
+          git rebase FETCH_HEAD || REBASE_OK=false
+          if [ "$REBASE_OK" = true ] && git push "$PUSH_URL" "HEAD:${AGGREGATE_BRANCH}"; then
+            echo "  -> pushed onto existing branch ${AGGREGATE_BRANCH} after rebase"
+          else
+            git rebase --abort || true
+            echo "  -> still failed -- falling back to a new branch ${FIX_BRANCH}"
+            git checkout -b "${FIX_BRANCH}"
+            git push "$PUSH_URL" "HEAD:${FIX_BRANCH}"
+            echo "AGGREGATE_MR_IID=" >> ../build.env
+            echo "  -> pushed as new branch ${FIX_BRANCH} (not aggregated)"
+          fi
+        fi
+      else
+        git push "$PUSH_URL" "HEAD:${FIX_BRANCH}"
+      fi
       cd ..
+      source build.env
       endstep 9
 
     - |
-      step 10 "Mark the Jira ticket done (idempotency)"
-      # Only runs after step 9 actually succeeded, so the "Work item
+      step 10 "Open or update the MR with the rich report"
+      # mr_description.md was written by orchestrator.cli (report.py) in
+      # step 8, from the agent's ===FIX_REPORT=== block — a rich
+      # description with a confidence meter, blast-radius badge, impacted
+      # architecture diagram, and estimated cost, not bare boilerplate.
+      cd target
+      if [ -n "${AGGREGATE_MR_IID:-}" ]; then
+        cd ..
+        python3 -m orchestrator.cli prepare-mr-update \
+          --payload jira_payload.json --mr-iid "${AGGREGATE_MR_IID}" \
+          --mr-description mr_description.md --similarity "${AGGREGATE_SIMILARITY}"
+        curl -sf -X PUT \
+          -H "PRIVATE-TOKEN: ${TARGET_REPO_TOKEN}" \
+          --data-urlencode "title@mr_title.txt" \
+          --data-urlencode "description@mr_description_merged.md" \
+          "https://gitlab.com/api/v4/projects/${PROJECT_PATH_ENCODED}/merge_requests/${AGGREGATE_MR_IID}"
+        echo "  -> updated MR !${AGGREGATE_MR_IID} to also cover ${ISSUE_KEY}"
+      else
+        curl -sf -X POST \
+          -H "PRIVATE-TOKEN: ${TARGET_REPO_TOKEN}" \
+          --data-urlencode "source_branch=${FIX_BRANCH}" \
+          --data-urlencode "target_branch=${DEFAULT_BRANCH}" \
+          --data-urlencode "title=[${ISSUE_KEY}] AI Automated Fix" \
+          --data-urlencode "description@../mr_description.md" \
+          "https://gitlab.com/api/v4/projects/${PROJECT_PATH_ENCODED}/merge_requests"
+        cd ..
+        echo "  -> opened a new MR on ${FIX_BRANCH}"
+      fi
+      endstep 10
+
+    - |
+      step 11 "Mark the Jira ticket done (idempotency)"
+      # Only runs after step 10 actually succeeded, so the "Work item
       # updated" trigger firing again on a later unrelated edit doesn't
       # re-run the whole pipeline for nothing -- see
       # docs/jira-automation-rule.md's JQL, which excludes labels
@@ -160,4 +230,4 @@ ai_fix:
         -d '{"update":{"labels":[{"add":"sec-ai-fix-done"}]}}' \
         "https://vixai.atlassian.net/rest/api/2/issue/${ISSUE_KEY}" \
         || echo "  -> warning: failed to add sec-ai-fix-done label to ${ISSUE_KEY}"
-      endstep 10
+      endstep 11
