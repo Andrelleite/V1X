@@ -52,9 +52,11 @@ def _print_attempts(label: str, attempts: list) -> None:
     invisible in the job log (only Claude's unrelated failure ever
     printed), which defeats the point of readable CI logs."""
     for runner, result in attempts[:-1]:
-        detail = (result.stdout or result.stderr or "").strip().replace("\n", " ")[:300]
-        print(f"[{label}] {runner.name} failed (exit {result.returncode}), "
-              f"falling back: {detail}")
+        print(f"[{label}] {runner.name} failed (exit {result.returncode}), falling back")
+        if result.stdout.strip():
+            print(f"[{label}] {runner.name} stdout: {result.stdout.strip()}")
+        if result.stderr.strip():
+            print(f"[{label}] {runner.name} stderr: {result.stderr.strip()}")
     final_runner, final_result = attempts[-1]
     print(f"[{label}] ran with backend={final_runner.name} (exit {final_result.returncode})")
     print(final_result.stdout)

@@ -55,7 +55,8 @@ def test_fix_execute_prints_every_attempted_backend_not_just_the_last(capsys, tm
 
     out = capsys.readouterr().out
     assert rc == 0
-    assert "gemini failed (exit 1), falling back: Not logged in" in out
+    assert "gemini failed (exit 1), falling back" in out
+    assert "gemini stderr: Not logged in" in out
     assert "ran with backend=claude (exit 0)" in out
 
 

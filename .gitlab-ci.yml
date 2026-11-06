@@ -35,7 +35,7 @@ ai_fix:
   rules:
     - if: '$CI_PIPELINE_SOURCE == "trigger"'
   before_script:
-    - apt-get update -qq && apt-get install -y -qq python3 curl git >/dev/null
+    - apt-get update -qq && apt-get install -y -qq python3 curl git ripgrep >/dev/null
     - npm install -g @google/gemini-cli @anthropic-ai/claude-code >/dev/null
   script:
     # All script lines in a GitLab job run in ONE continuous shell, so a
@@ -250,7 +250,7 @@ review_loop:
   rules:
     - if: '$CI_PIPELINE_SOURCE == "trigger" || $CI_PIPELINE_SOURCE == "schedule"'
   before_script:
-    - apt-get update -qq && apt-get install -y -qq python3 curl git >/dev/null
+    - apt-get update -qq && apt-get install -y -qq python3 curl git ripgrep >/dev/null
     - npm install -g @google/gemini-cli @anthropic-ai/claude-code >/dev/null
   script:
     - |
