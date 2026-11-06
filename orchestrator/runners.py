@@ -50,17 +50,28 @@ class Runner:
 
 
 def _gemini_args(instruction: str, binary: str = "gemini") -> list[str]:
-    # gemini-2.5-pro is retired for new API users as of a real CI run's
-    # error (404 ModelNotFoundError) — Google's own error message named
-    # this as the replacement. Override via GEMINI_MODEL if this drifts
-    # again; preview models can be renamed/retired on short notice.
-    model = os.environ.get("GEMINI_MODEL", "gemini-3.1-pro-preview")
+    # gemini-2.5-pro and gemini-2.5-flash were both retired for new API
+    # users within days of each other in real CI runs (404
+    # ModelNotFoundError each time) — pro-tier models left the free tier
+    # entirely in April 2026, and flash model names keep rotating too.
+    # gemini-3.8-flash is the current free-tier-eligible default; override
+    # via GEMINI_MODEL the moment this drifts again (it will).
+    model = os.environ.get("GEMINI_MODEL", "gemini-3.8-flash")
     # --skip-trust bypasses Gemini CLI's workspace-trust gate, which is a
     # SEPARATE check from --approval-mode: without it, in a headless/CI
     # environment with no TTY to grant trust interactively, Gemini silently
     # downgrades approval-mode back to "default" (observed in a real CI
     # run) and then fails outright since nothing can approve its tool calls.
-    return [binary, "-p", instruction, "-m", model, "--approval-mode=yolo", "--skip-trust"]
+    # --output-format json gets a single structured result (response text +
+    # token-usage stats) instead of mixed progress/warning noise on stdout —
+    # see orchestrator/cost.py, which parses it for both the agent's actual
+    # text (for FIX_REPORT) and an estimated run cost (Gemini's CLI doesn't
+    # report a dollar figure directly, so cost.py computes one from the
+    # token counts here).
+    return [
+        binary, "-p", instruction, "-m", model,
+        "--approval-mode=yolo", "--skip-trust", "--output-format", "json",
+    ]
 
 
 def _claude_args(instruction: str, binary: str = "claude") -> list[str]:
@@ -74,6 +85,10 @@ def _claude_args(instruction: str, binary: str = "claude") -> list[str]:
     # specific commands this job needs: `git add` and `git commit`. Our own
     # script handles `git push` and MR creation deterministically after
     # this runs — Claude never needs those itself.
+    # --output-format json: see orchestrator/cost.py — Claude Code may
+    # report a real cost_usd/total_cost_usd figure directly (unlike
+    # Gemini), which is strictly more accurate than any estimate we could
+    # compute ourselves (it correctly accounts for prompt-cache discounts).
     return [
         binary,
         "-p",
@@ -83,6 +98,8 @@ def _claude_args(instruction: str, binary: str = "claude") -> list[str]:
         "--allowedTools",
         "Bash(git add:*)",
         "Bash(git commit:*)",
+        "--output-format",
+        "json",
     ]
 
 
@@ -94,6 +111,13 @@ def _claude_configured() -> bool:
     # Either a billed API key, OR a restored subscription (Pro/Max) OAuth
     # session file — see CLAUDE_CODE_OAUTH_CREDS in the workflows.
     return bool(os.environ.get("ANTHROPIC_API_KEY")) or CLAUDE_CREDENTIALS_FILE.exists()
+
+
+def claude_uses_subscription() -> bool:
+    """True when Claude ran on the restored Pro/Max OAuth session rather
+    than a billed API key — used by cost.py, since a subscription run has
+    no marginal per-request dollar cost to report at all."""
+    return not bool(os.environ.get("ANTHROPIC_API_KEY"))
 
 
 GEMINI = Runner(

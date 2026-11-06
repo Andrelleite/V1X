@@ -130,13 +130,31 @@ def _fallback_diagram(issue_key: str, affected_files: str) -> str:
     return "\n".join(lines)
 
 
+def _cost_line(cost_usd: float | None, cost_note: str) -> str:
+    if cost_usd is None:
+        return f"_unavailable_ ({cost_note})" if cost_note else "_unavailable_"
+    if cost_usd == 0:
+        return f"$0.00 — {cost_note}"
+    return f"~${cost_usd:.4f} _({cost_note})_"
+
+
 def render_mr_description(
-    ticket, owasp_category: str, report: FixReport, backend: str = "", issue_url: str = ""
+    ticket,
+    owasp_category: str,
+    report: FixReport,
+    backend: str = "",
+    issue_url: str = "",
+    cost_usd: float | None = None,
+    cost_note: str = "",
 ) -> str:
     """`ticket` is a VulnTicket (key/repo/priority come from it — real
     Jira/pipeline data, not agent prose). `owasp_category` is the
     deterministic classify() result the pipeline already computed, passed
     through so it doesn't depend on the agent restating it correctly.
+    `cost_usd`/`cost_note` come from cost.py — a real figure for Claude
+    when its JSON output reports one, an estimate from token counts for
+    Gemini (which doesn't report a dollar figure at all), or $0 for a
+    Claude Pro/Max subscription run (no marginal per-request cost).
     """
     backend_note = f" (backend: `{backend}`)" if backend else ""
     url = issue_url or ""
@@ -149,7 +167,8 @@ def render_mr_description(
             f"| **Jira Ticket** | {ticket_link} |\n"
             f"| **Severity** | {_severity_badge(ticket.priority)} |\n"
             f"| **OWASP Category** | {owasp_category} |\n"
-            f"| **Target Repo** | `{ticket.repo or 'unknown'}` |\n\n"
+            f"| **Target Repo** | `{ticket.repo or 'unknown'}` |\n"
+            f"| **Estimated Cost** | {_cost_line(cost_usd, cost_note)} |\n\n"
             "⚠️ **No structured fix report was found** — the agent's "
             "output didn't contain a parseable `===FIX_REPORT===` block"
             f"{backend_note}. Treat this MR's confidence as **unverified** "
@@ -171,6 +190,7 @@ def render_mr_description(
 | **OWASP Category** | {owasp_category} |
 | **Target Repo** | `{ticket.repo or 'unknown'}` |
 | **Affected Files** | {report.affected_files or "_not reported_"} |
+| **Estimated Cost** | {_cost_line(cost_usd, cost_note)} |
 
 **Confidence:** {_confidence_meter(report.confidence)}
 **Blast Radius:** {blast_badge}

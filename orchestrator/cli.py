@@ -17,12 +17,13 @@ import os
 import sys
 from pathlib import Path
 
+from . import cost as cost_module
 from .fixer import run_fix, run_review
 from .models import Decision, ReviewComment, VulnTicket
 from .prompt_builder import build_fix_instruction, build_review_instruction, category_line
 from .report import parse_fix_report, render_mr_description
 from .review_loop import route
-from .runners import build_command, select_runner
+from .runners import build_command, claude_uses_subscription, select_runner
 
 JIRA_SITE_URL = os.environ.get("JIRA_SITE_URL", "https://vixai.atlassian.net")
 
@@ -65,18 +66,23 @@ def cmd_fix(args: argparse.Namespace) -> int:
     print(result.stdout)
     print(result.stderr, file=sys.stderr)
 
-    report = parse_fix_report(result.stdout)
+    run_cost = cost_module.extract(
+        runner.name, result.stdout, using_subscription=claude_uses_subscription()
+    )
+    report = parse_fix_report(run_cost.text)
     description = render_mr_description(
         ticket,
         category_line(ticket.text),
         report,
         backend=runner.name,
         issue_url=_issue_url(ticket.key),
+        cost_usd=run_cost.cost_usd,
+        cost_note=run_cost.cost_note,
     )
     Path(args.mr_description_out).write_text(description)
     print(f"[fix] wrote MR description to {args.mr_description_out} "
           f"(report found: {report.found}, confidence: {report.confidence}, "
-          f"blast_radius: {report.blast_radius})")
+          f"blast_radius: {report.blast_radius}, cost_usd: {run_cost.cost_usd})")
 
     return result.returncode
 

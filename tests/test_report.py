@@ -74,6 +74,8 @@ def test_render_mr_description_includes_meter_badge_and_diagram():
         report,
         backend="claude",
         issue_url="https://vixai.atlassian.net/browse/VD-14",
+        cost_usd=0.0231,
+        cost_note="reported directly by Claude Code",
     )
     assert "VD-14" in description
     assert "85%" in description
@@ -83,6 +85,17 @@ def test_render_mr_description_includes_meter_badge_and_diagram():
     assert "A03 (Injection)" in description
     assert "```mermaid" in description
     assert "flowchart TD" in description
+    assert "$0.0231" in description
+    assert "**Estimated Cost**" in description
+
+
+def test_render_mr_description_cost_unavailable_is_labeled_clearly():
+    report = parse_fix_report(SAMPLE_OUTPUT)
+    description = render_mr_description(
+        TICKET, "A03 (Injection)", report, cost_usd=None, cost_note="could not parse output"
+    )
+    assert "_unavailable_" in description
+    assert "could not parse output" in description
 
 
 def test_render_mr_description_falls_back_cleanly_when_not_found():
