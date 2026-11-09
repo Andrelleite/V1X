@@ -22,6 +22,7 @@ from pathlib import Path
 from . import aggregation as aggregation_module
 from . import context as context_module
 from . import cost as cost_module
+from . import cost_report as cost_report_module
 from . import gitlab_review as gitlab_review_module
 from .fixer import run_fix, run_review
 from .gitlab_review import OpenThread
@@ -286,6 +287,11 @@ def _handle_review_thread(
     run_cost = cost_module.extract(
         runner.name, result.stdout, using_subscription=claude_uses_subscription()
     )
+    # Printed unconditionally, even on an otherwise-failed thread below --
+    # a thread that fails to parse or push still spent real money on the
+    # backend call that was attempted, and a cost pilot that only sees the
+    # successful threads undercounts the true spend per ticket.
+    print(f"[{label}] MR !{t.mr_iid} thread cost_usd: {run_cost.cost_usd} ({run_cost.cost_note})")
     response = parse_review_response(run_cost.text)
     if not response.found:
         print(f"[{label}] no parseable ===REVIEW_RESPONSE=== block for "
@@ -393,6 +399,32 @@ def cmd_review_watch(args: argparse.Namespace) -> int:
     return exit_code
 
 
+def cmd_cost_report(args: argparse.Namespace) -> int:
+    """Turns a hand-filled JSON file of per-ticket cost figures (copied
+    from real job logs -- see docs/cost-pilot.md) into the cost/ROI
+    summary for the "is this worth it" pilot. Each entry:
+    {"issue_key": "VD-30", "fix_cost_usd": 0.41, "review_cost_usd": 0.18}."""
+    entries_data = _load_json(args.entries)
+    entries = [
+        (
+            e["issue_key"],
+            float(e["fix_cost_usd"]),
+            float(e.get("review_cost_usd", 0.0)),
+        )
+        for e in entries_data
+    ]
+    report = cost_report_module.build_report(
+        entries,
+        baseline_hourly_usd=args.baseline_hourly_usd,
+        baseline_hours_per_ticket=args.baseline_hours_per_ticket,
+    )
+    text = cost_report_module.render_report(report)
+    print(text)
+    if args.out:
+        Path(args.out).write_text(text)
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="orchestrator")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -451,6 +483,24 @@ def main(argv: list[str] | None = None) -> int:
     review_watch_p.add_argument("--poll-interval-seconds", type=int, default=60)
     review_watch_p.add_argument("--max-rounds", type=int, default=5)
     review_watch_p.set_defaults(func=cmd_review_watch)
+
+    cost_report_p = sub.add_parser(
+        "cost-report",
+        help="Turn a hand-filled per-ticket cost JSON file into a cost/ROI report",
+    )
+    cost_report_p.add_argument(
+        "--entries", required=True,
+        help="Path to a JSON file: list of {issue_key, fix_cost_usd, review_cost_usd}",
+    )
+    cost_report_p.add_argument(
+        "--baseline-hourly-usd", type=float, default=cost_report_module.DEFAULT_BASELINE_HOURLY_USD,
+    )
+    cost_report_p.add_argument(
+        "--baseline-hours-per-ticket", type=float,
+        default=cost_report_module.DEFAULT_BASELINE_HOURS_PER_TICKET,
+    )
+    cost_report_p.add_argument("--out", default=None, help="Optional path to also write the report")
+    cost_report_p.set_defaults(func=cmd_cost_report)
 
     args = parser.parse_args(argv)
     return args.func(args)

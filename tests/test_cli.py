@@ -112,11 +112,14 @@ def test_review_loop_execute_fixes_pushes_and_resolves(capsys, monkeypatch):
          patch("orchestrator.cli.gitlab_review_module.reply_and_resolve", return_value=True) as reply_mock:
         rc = main(["review-loop", "--repo", "group/repo", "--execute"])
 
+    out = capsys.readouterr().out
     assert rc == 0
     push_mock.assert_called_once_with("target", "group/repo", "tok", "fix/ai-VD-9-1")
     trigger_mock.assert_called_once_with("https://gitlab.com/api/v4", "group/repo", "tok", 9)
     reply_mock.assert_called_once()
     assert reply_mock.call_args.args[-1] == "FIXED: Added validation."
+    # Cost pilot needs every thread's spend in the log, not just cmd_fix's.
+    assert "MR !9 thread cost_usd: 0.5" in out
 
 
 def test_review_loop_execute_defense_skips_push(capsys, monkeypatch):
@@ -143,9 +146,11 @@ def test_review_loop_execute_defense_skips_push(capsys, monkeypatch):
          patch("orchestrator.cli.gitlab_review_module.reply_and_resolve", return_value=True) as reply_mock:
         rc = main(["review-loop", "--repo", "group/repo", "--execute"])
 
+    out = capsys.readouterr().out
     assert rc == 0
     push_mock.assert_not_called()
     assert reply_mock.call_args.args[-1] == "FALSE POSITIVE DEFENSE: config.ts:5 shows this is a build-time constant."
+    assert "MR !9 thread cost_usd: 0.1" in out
 
 
 def test_review_watch_without_token_is_a_noop(capsys, monkeypatch):
@@ -232,6 +237,25 @@ def test_review_watch_reports_failure_when_a_thread_cannot_be_handled(monkeypatc
             "--max-rounds", "5",
         ])
     assert rc == 1
+
+
+def test_cost_report_execute_writes_and_prints_summary(capsys, tmp_path):
+    entries_path = tmp_path / "entries.json"
+    entries_path.write_text(json.dumps([
+        {"issue_key": "VD-30", "fix_cost_usd": 0.40, "review_cost_usd": 0.10},
+        {"issue_key": "VD-31", "fix_cost_usd": 0.20},
+    ]))
+    out_path = tmp_path / "report.txt"
+
+    rc = main([
+        "cost-report", "--entries", str(entries_path), "--out", str(out_path),
+    ])
+    out = capsys.readouterr().out
+
+    assert rc == 0
+    assert "VD-30" in out
+    assert "Total actual spend:   $0.7000" in out
+    assert out_path.read_text() == out.rstrip("\n")
 
 
 def test_review_loop_execute_marks_failure_when_checkout_fails(monkeypatch):
